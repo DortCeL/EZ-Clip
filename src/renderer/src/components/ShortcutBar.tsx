@@ -3,9 +3,12 @@ const SHORTCUTS: [string, string][] = [
   ['J K L', 'shuttle'],
   ['← →', '5s'],
   [', .', 'frame'],
-  ['↑ ↓', 'keyframe'],
   ['I O', 'mark'],
-  ['A', 'add']
+  ['A', 'add'],
+  ['Tab', 'source / timeline'],
+  ['S', 'split'],
+  ['Q W', 'trim'],
+  ['Del', 'remove']
 ]
 
 export function ShortcutBar() {

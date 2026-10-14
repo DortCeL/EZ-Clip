@@ -1,7 +1,16 @@
 import { useEffect } from 'react'
 import { addMarkedRange, clearMarks, jumpKeyframe, markIn, markOut } from '../lib/actions'
 import { openImportDialog } from '../lib/importMedia'
+import {
+  deleteSelected,
+  jumpSegmentBoundary,
+  splitAtPlayhead,
+  toggleMode,
+  trimEndToPlayhead,
+  trimStartToPlayhead
+} from '../lib/timelineActions'
 import { engine } from '../player'
+import { useStore } from '../store'
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -30,9 +39,13 @@ export function useShortcuts(): void {
 }
 
 function handleKey(e: KeyboardEvent): boolean {
+  const timeline = useStore.getState().mode === 'timeline'
   switch (e.key) {
     case ' ':
       engine.togglePlay()
+      return true
+    case 'Tab':
+      toggleMode()
       return true
     case 'k':
     case 'K':
@@ -53,10 +66,12 @@ function handleKey(e: KeyboardEvent): boolean {
       engine.nudge(e.shiftKey ? 1 : 5)
       return true
     case 'ArrowUp':
-      jumpKeyframe(-1)
+      if (timeline) jumpSegmentBoundary(-1)
+      else jumpKeyframe(-1)
       return true
     case 'ArrowDown':
-      jumpKeyframe(1)
+      if (timeline) jumpSegmentBoundary(1)
+      else jumpKeyframe(1)
       return true
     case ',':
       engine.stepFrames(-1)
@@ -87,6 +102,26 @@ function handleKey(e: KeyboardEvent): boolean {
     case 'Enter':
       if (e.repeat) return true
       addMarkedRange()
+      return true
+    case 's':
+    case 'S':
+      if (e.repeat) return true
+      splitAtPlayhead()
+      return true
+    case 'q':
+    case 'Q':
+      if (e.repeat) return true
+      trimStartToPlayhead()
+      return true
+    case 'w':
+    case 'W':
+      if (e.repeat) return true
+      trimEndToPlayhead()
+      return true
+    case 'Delete':
+    case 'Backspace':
+      if (e.repeat) return true
+      deleteSelected()
       return true
   }
   return false

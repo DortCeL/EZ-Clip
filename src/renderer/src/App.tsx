@@ -1,7 +1,9 @@
 import { DropOverlay } from './components/DropOverlay'
 import { MediaBin } from './components/MediaBin'
+import { ModeTabs } from './components/ModeTabs'
 import { ShortcutBar } from './components/ShortcutBar'
 import { SourceScrubber } from './components/SourceScrubber'
+import { Timeline } from './components/Timeline'
 import { ToastView } from './components/ToastView'
 import { Transport } from './components/Transport'
 import { Viewer } from './components/Viewer'
@@ -10,8 +12,8 @@ import { useStore } from './store'
 
 export default function App() {
   useShortcuts()
+  const mode = useStore((s) => s.mode)
   const activeItem = useStore((s) => s.media.find((m) => m.id === s.activeSourceId))
-  const segmentCount = useStore((s) => s.segments.length)
 
   return (
     <div className="flex h-full flex-col">
@@ -19,18 +21,19 @@ export default function App() {
         <span className="text-lg font-semibold tracking-tight">
           Ez<span className="text-accent">-clip</span>
         </span>
-        <span className="ml-auto text-xs text-zinc-500">{segmentCount} clip{segmentCount === 1 ? '' : 's'} on timeline</span>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <MediaBin />
         <section className="flex min-w-0 flex-1 flex-col">
+          <ModeTabs />
           <Viewer />
-          {activeItem && <SourceScrubber item={activeItem} />}
+          {mode === 'source' && activeItem && <SourceScrubber item={activeItem} />}
           <Transport />
         </section>
       </div>
 
+      <Timeline />
       <ShortcutBar />
       <DropOverlay />
       <ToastView />

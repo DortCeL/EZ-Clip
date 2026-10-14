@@ -1,5 +1,6 @@
 import { formatFps, formatTime } from '../lib/format'
 import { openImportDialog } from '../lib/importMedia'
+import { addWholeClip } from '../lib/timelineActions'
 import { useStore, type MediaItem } from '../store'
 
 export function MediaBin() {
@@ -84,6 +85,16 @@ function MediaCard({ item }: { item: MediaItem }) {
           {item.keyframeStatus === 'error' && <span className="text-red-400">keyframes unavailable</span>}
         </div>
       </div>
+      <button
+        className="bg-accent hover:bg-accent-strong absolute top-1 right-7 hidden h-5 items-center rounded px-1.5 text-[10px] font-medium text-white group-hover:flex"
+        onClick={(e) => {
+          e.stopPropagation()
+          addWholeClip(item.id)
+        }}
+        title="Add the whole clip to the timeline"
+      >
+        + Timeline
+      </button>
       <button
         className="absolute top-1 right-1 hidden h-5 w-5 items-center justify-center rounded bg-black/70 text-xs text-zinc-300 group-hover:flex hover:bg-red-600 hover:text-white"
         onClick={(e) => {

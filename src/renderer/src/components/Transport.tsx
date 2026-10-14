@@ -9,9 +9,11 @@ export function Transport() {
   const duration = usePlayback((s) => s.duration)
   const playing = usePlayback((s) => s.playing)
   const speed = usePlayback((s) => s.speed)
+  const mode = useStore((s) => s.mode)
   const item = useStore((s) => s.media.find((m) => m.id === s.activeSourceId))
   const marks = useStore((s) => (item ? s.marks[item.id] : undefined))
-  const disabled = !item
+  const hasSegments = useStore((s) => s.segments.length > 0)
+  const disabled = mode === 'source' ? !item : !hasSegments
 
   const inSnapped = marks?.in != null ? snapToKeyframe(item?.keyframes ?? null, marks.in) : null
 
@@ -35,6 +37,22 @@ export function Transport() {
         </span>
       )}
 
+      {mode === 'timeline' ? (
+        <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">
+          <span>
+            <kbd>S</kbd> split
+          </span>
+          <span>
+            <kbd>Q</kbd> / <kbd>W</kbd> trim before / after playhead
+          </span>
+          <span>
+            <kbd>Del</kbd> remove clip
+          </span>
+          <span>
+            <kbd>↑</kbd> <kbd>↓</kbd> prev / next clip
+          </span>
+        </div>
+      ) : (
       <div className="ml-auto flex items-center gap-2">
         <MarkButton label="In" shortcut="I" value={inSnapped} onClick={markIn} disabled={disabled} />
         <MarkButton label="Out" shortcut="O" value={marks?.out ?? null} onClick={markOut} disabled={disabled} />
@@ -52,6 +70,7 @@ export function Transport() {
           Add to timeline <kbd className="ml-1">A</kbd>
         </button>
       </div>
+      )}
     </div>
   )
 }
