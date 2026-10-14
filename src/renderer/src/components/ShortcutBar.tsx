@@ -8,7 +8,8 @@ const SHORTCUTS: [string, string][] = [
   ['Tab', 'source / timeline'],
   ['S', 'split'],
   ['Q W', 'trim'],
-  ['Del', 'remove']
+  ['Del', 'remove'],
+  ['Ctrl+Z / Ctrl+Y', 'undo / redo']
 ]
 
 export function ShortcutBar() {

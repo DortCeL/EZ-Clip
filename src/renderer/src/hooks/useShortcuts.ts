@@ -4,10 +4,12 @@ import { openImportDialog } from '../lib/importMedia'
 import {
   deleteSelected,
   jumpSegmentBoundary,
+  redo,
   splitAtPlayhead,
   toggleMode,
   trimEndToPlayhead,
-  trimStartToPlayhead
+  trimStartToPlayhead,
+  undo
 } from '../lib/timelineActions'
 import { engine } from '../player'
 import { useStore } from '../store'
@@ -33,6 +35,12 @@ export function useShortcuts(): void {
         } else if (k === ',') {
           e.preventDefault()
           useStore.getState().setDialog('settings')
+        } else if (k === 'z' && !e.shiftKey) {
+          e.preventDefault()
+          undo()
+        } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+          e.preventDefault()
+          redo()
         }
         return
       }

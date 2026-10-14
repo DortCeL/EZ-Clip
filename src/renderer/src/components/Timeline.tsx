@@ -11,17 +11,21 @@ import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTime } from '../lib/format'
 import { layoutSequence, type PlacedSegment } from '../lib/sequence'
-import { deleteSelected, selectAndSeek, splitAtPlayhead } from '../lib/timelineActions'
+import { deleteSelected, redo, selectAndSeek, splitAtPlayhead, undo } from '../lib/timelineActions'
 import { engine, usePlayback } from '../player'
 import { useStore } from '../store'
 
 const TRACK_PADDING = 16
+const EDGE_SCROLL_ZONE = 40
+const EDGE_SCROLL_STEP = 24
 
 export function Timeline() {
   const segments = useStore((s) => s.segments)
   const media = useStore((s) => s.media)
   const mode = useStore((s) => s.mode)
   const selectedId = useStore((s) => s.selectedSegmentId)
+  const canUndo = useStore((s) => s.past.length > 0)
+  const canRedo = useStore((s) => s.future.length > 0)
   const layout = useMemo(() => layoutSequence(segments, media), [segments, media])
   const [zoom, setZoom] = useState(1)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -37,17 +41,45 @@ export function Timeline() {
     useStore.getState().moveSegment(String(e.active.id), to)
   }
 
+  const [scrubbing, setScrubbing] = useState(false)
+
+  const timeAt = (clientX: number, el: HTMLElement): number =>
+    (clientX - el.getBoundingClientRect().left - TRACK_PADDING) / pxPerSec
+
+  const autoScroll = (clientX: number): void => {
+    const sc = scrollRef.current
+    if (!sc) return
+    const rect = sc.getBoundingClientRect()
+    if (clientX > rect.right - EDGE_SCROLL_ZONE) sc.scrollLeft += EDGE_SCROLL_STEP
+    else if (clientX < rect.left + EDGE_SCROLL_ZONE) sc.scrollLeft -= EDGE_SCROLL_STEP
+  }
+
   const onTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
-    if (e.target !== e.currentTarget || layout.total === 0) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const t = (e.clientX - rect.left - TRACK_PADDING) / pxPerSec
+    if (e.button !== 0 || layout.total === 0) return
+    if ((e.target as HTMLElement).closest('[data-block]')) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setScrubbing(true)
+    engine.pause()
+    const t = timeAt(e.clientX, e.currentTarget)
     const store = useStore.getState()
     if (store.mode !== 'timeline') {
       engine.setTimelineTimeHint(t)
       store.setMode('timeline')
     } else {
-      void engine.seek(t)
+      engine.scrub(t)
     }
+  }
+
+  const onTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    autoScroll(e.clientX)
+    engine.scrub(timeAt(e.clientX, e.currentTarget))
+  }
+
+  const endScrub = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    setScrubbing(false)
   }
 
   return (
@@ -62,6 +94,22 @@ export function Timeline() {
           {layout.placed.length} clip{layout.placed.length === 1 ? '' : 's'} · {formatTime(layout.total)}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
+            onClick={undo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+          >
+            Undo
+          </button>
+          <button
+            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
+            onClick={redo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Y)"
+          >
+            Redo
+          </button>
           <button
             className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
             onClick={splitAtPlayhead}
@@ -96,6 +144,9 @@ export function Timeline() {
           className="relative h-full"
           style={{ width: Math.max(viewportWidth, layout.total * pxPerSec + TRACK_PADDING * 2) }}
           onPointerDown={onTrackPointerDown}
+          onPointerMove={onTrackPointerMove}
+          onPointerUp={endScrub}
+          onPointerCancel={endScrub}
         >
           <Ruler total={layout.total} pxPerSec={pxPerSec} />
           {layout.placed.length === 0 ? (
@@ -116,7 +167,7 @@ export function Timeline() {
               </SortableContext>
             </DndContext>
           )}
-          {mode === 'timeline' && layout.total > 0 && <Playhead pxPerSec={pxPerSec} />}
+          {mode === 'timeline' && layout.total > 0 && <Playhead pxPerSec={pxPerSec} dragging={scrubbing} />}
         </div>
       </div>
     </section>
@@ -136,6 +187,7 @@ function Block({ placed, pxPerSec, selected }: { placed: PlacedSegment; pxPerSec
   return (
     <div
       ref={setNodeRef}
+      data-block
       {...attributes}
       {...listeners}
       onClick={onClick}
@@ -163,14 +215,25 @@ function Block({ placed, pxPerSec, selected }: { placed: PlacedSegment; pxPerSec
   )
 }
 
-function Playhead({ pxPerSec }: { pxPerSec: number }) {
+function Playhead({ pxPerSec, dragging }: { pxPerSec: number; dragging: boolean }) {
   const time = usePlayback((s) => s.time)
   return (
     <div
-      className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-white shadow-[0_0_6px_rgba(255,255,255,0.7)]"
+      className="group absolute top-0 bottom-0 z-20 w-3 -translate-x-1/2 cursor-ew-resize"
       style={{ left: TRACK_PADDING + time * pxPerSec }}
+      title="Drag to scrub"
     >
-      <div className="absolute -top-0 -left-[5px] h-0 w-0 border-x-[6px] border-t-[8px] border-x-transparent border-t-white" />
+      <div className="pointer-events-none absolute top-0 bottom-0 left-1/2 w-0.5 -translate-x-1/2 bg-white shadow-[0_0_6px_rgba(255,255,255,0.7)]" />
+      <div
+        className={`pointer-events-none absolute top-0 left-1/2 h-0 w-0 -translate-x-1/2 border-x-[7px] border-t-[10px] border-x-transparent ${
+          dragging ? 'border-t-accent' : 'border-t-white group-hover:border-t-accent'
+        }`}
+      />
+      {dragging && (
+        <div className="pointer-events-none absolute top-3 left-2 rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] whitespace-nowrap text-white">
+          {formatTime(time)}
+        </div>
+      )}
     </div>
   )
 }
@@ -181,9 +244,9 @@ function Ruler({ total, pxPerSec }: { total: number; pxPerSec: number }) {
   const ticks: number[] = []
   for (let t = 0; t <= total + 1e-6; t += step) ticks.push(t)
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 h-6 border-b border-zinc-800">
+    <div className="absolute inset-x-0 top-0 h-6 cursor-ew-resize border-b border-zinc-800 hover:bg-zinc-900">
       {ticks.map((t) => (
-        <div key={t} className="absolute top-0 h-full" style={{ left: TRACK_PADDING + t * pxPerSec }}>
+        <div key={t} className="pointer-events-none absolute top-0 h-full" style={{ left: TRACK_PADDING + t * pxPerSec }}>
           <div className="h-2 w-px bg-zinc-600" />
           <span className="absolute top-2 left-1 font-mono text-[9px] text-zinc-500">{formatTime(t, false)}</span>
         </div>

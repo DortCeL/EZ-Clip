@@ -90,6 +90,20 @@ export function deleteSelected(): void {
   store.removeSegment(id)
 }
 
+export function undo(): void {
+  const store = useStore.getState()
+  engine.pause()
+  const label = store.undo()
+  store.showToast(label ? `Undo: ${label}` : 'Nothing to undo')
+}
+
+export function redo(): void {
+  const store = useStore.getState()
+  engine.pause()
+  const label = store.redo()
+  store.showToast(label ? `Redo: ${label}` : 'Nothing to redo')
+}
+
 export function jumpSegmentBoundary(direction: -1 | 1): void {
   const { placed, total } = engine.sequence
   if (placed.length === 0) return

@@ -14,8 +14,8 @@ export function markIn(): void {
   const store = useStore.getState()
   const t = engine.time
   const out = store.marks[item.id]?.out
-  store.setMark(item.id, 'in', t)
-  if (out != null && out <= snapToKeyframe(item.keyframes, t)) store.setMark(item.id, 'out', null)
+  const outInvalid = out != null && out <= snapToKeyframe(item.keyframes, t)
+  store.setMarks(item.id, outInvalid ? { in: t, out: null } : { in: t })
 }
 
 export function markOut(): void {
@@ -28,7 +28,7 @@ export function markOut(): void {
     store.showToast('Out point must be after the in point', 'error')
     return
   }
-  store.setMark(item.id, 'out', t)
+  store.setMarks(item.id, { out: t })
 }
 
 export function clearMarks(): void {
@@ -44,12 +44,15 @@ export function addMarkedRange(): void {
   const marks = store.marks[item.id] ?? { in: null, out: null }
   const start = marks.in ?? 0
   const end = marks.out ?? item.info.duration
-  const segment = store.addSegment(item.id, start, end)
+  const segment = store.transact('Add clip', () => {
+    const added = store.addSegment(item.id, start, end)
+    if (added) store.clearMarks(item.id)
+    return added
+  })
   if (!segment) {
     store.showToast('Range is too short to add', 'error')
     return
   }
-  store.clearMarks(item.id)
   const count = store.segments.length + 1
   store.showToast(
     `Added ${formatTime(segment.end - segment.start)} to timeline (${count} clip${count === 1 ? '' : 's'})`

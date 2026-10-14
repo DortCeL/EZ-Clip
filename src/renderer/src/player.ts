@@ -40,6 +40,8 @@ class PlayerEngine {
   private segIndex = -1
   private timelineTime = 0
   private transitioning = false
+  private scrubTarget: number | null = null
+  private scrubbing = false
 
   attach(video: HTMLVideoElement): () => void {
     this.video = video
@@ -145,7 +147,7 @@ class PlayerEngine {
   private publish(): void {
     const time = this.time
     if (this.mode === 'timeline' && !this.transitioning) this.timelineTime = time
-    usePlayback.setState({ time, duration: this.duration })
+    usePlayback.setState({ time: this.scrubTarget ?? time, duration: this.duration })
   }
 
   private startLoop(): void {
@@ -320,6 +322,30 @@ class PlayerEngine {
       this.transitioning = false
       this.publish()
     }
+  }
+
+  /**
+   * Seek for drag-scrubbing. The playhead follows the pointer immediately; the video only
+   * decodes the latest requested position, so fast drags never queue up a backlog of seeks.
+   */
+  scrub(t: number): void {
+    this.scrubTarget = Math.min(Math.max(0, t), this.duration)
+    usePlayback.setState({ time: this.scrubTarget })
+    if (this.scrubbing) return
+    this.scrubbing = true
+    void (async () => {
+      try {
+        while (this.scrubTarget != null) {
+          const target = this.scrubTarget
+          await this.seek(target)
+          if (this.scrubTarget === target) this.scrubTarget = null
+        }
+      } finally {
+        this.scrubbing = false
+        this.scrubTarget = null
+        this.publish()
+      }
+    })()
   }
 
   play(speed = 1): void {

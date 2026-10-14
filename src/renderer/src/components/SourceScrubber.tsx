@@ -20,7 +20,7 @@ export function SourceScrubber({ item }: { item: MediaItem }) {
   const seekFromPointer = (clientX: number): void => {
     const rect = trackRef.current!.getBoundingClientRect()
     const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-    void engine.seek(ratio * duration)
+    engine.scrub(ratio * duration)
   }
 
   const onPointerDown = (e: React.PointerEvent): void => {
