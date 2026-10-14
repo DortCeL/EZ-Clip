@@ -23,9 +23,16 @@ export function useShortcuts(): void {
       if (isTyping(e.target) || document.querySelector('[data-modal-open]')) return
 
       if (e.ctrlKey || e.metaKey) {
-        if (e.key.toLowerCase() === 'o') {
+        const k = e.key.toLowerCase()
+        if (k === 'o') {
           e.preventDefault()
           void openImportDialog()
+        } else if (k === 'e') {
+          e.preventDefault()
+          useStore.getState().setDialog('export')
+        } else if (k === ',') {
+          e.preventDefault()
+          useStore.getState().setDialog('settings')
         }
         return
       }

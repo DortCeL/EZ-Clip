@@ -41,6 +41,9 @@ interface State {
   mode: Mode
   importing: number
   toast: Toast | null
+  dialog: 'export' | 'settings' | null
+
+  setDialog(dialog: State['dialog']): void
 
   addMedia(info: MediaInfo): MediaItem
   updateMedia(id: string, patch: Partial<MediaItem>): void
@@ -79,6 +82,11 @@ export const useStore = create<State>((set, get) => ({
   mode: 'source',
   importing: 0,
   toast: null,
+  dialog: null,
+
+  setDialog(dialog) {
+    set({ dialog })
+  },
 
   addMedia(info) {
     const item: MediaItem = {

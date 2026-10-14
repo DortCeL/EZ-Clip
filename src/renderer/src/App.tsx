@@ -1,4 +1,7 @@
+import { useCallback } from 'react'
 import { DropOverlay } from './components/DropOverlay'
+import { ExportDialog } from './components/ExportDialog'
+import { SettingsDialog } from './components/SettingsDialog'
 import { MediaBin } from './components/MediaBin'
 import { ModeTabs } from './components/ModeTabs'
 import { ShortcutBar } from './components/ShortcutBar'
@@ -14,6 +17,10 @@ export default function App() {
   useShortcuts()
   const mode = useStore((s) => s.mode)
   const activeItem = useStore((s) => s.media.find((m) => m.id === s.activeSourceId))
+  const dialog = useStore((s) => s.dialog)
+  const hasSegments = useStore((s) => s.segments.length > 0)
+  const setDialog = useStore((s) => s.setDialog)
+  const closeDialog = useCallback(() => setDialog(null), [setDialog])
 
   return (
     <div className="flex h-full flex-col">
@@ -21,6 +28,19 @@ export default function App() {
         <span className="text-lg font-semibold tracking-tight">
           Ez<span className="text-accent">-clip</span>
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button className="btn-secondary" onClick={() => setDialog('settings')} title="Settings (Ctrl+,)">
+            Settings
+          </button>
+          <button
+            className="btn-primary"
+            onClick={() => setDialog('export')}
+            disabled={!hasSegments}
+            title="Export the timeline (Ctrl+E)"
+          >
+            Export
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -37,6 +57,8 @@ export default function App() {
       <ShortcutBar />
       <DropOverlay />
       <ToastView />
+      {dialog === 'export' && <ExportDialog onClose={closeDialog} />}
+      {dialog === 'settings' && <SettingsDialog onClose={closeDialog} />}
     </div>
   )
 }
