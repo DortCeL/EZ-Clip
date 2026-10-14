@@ -12,6 +12,9 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
+    optimizeDeps: {
+      include: ['react', 'react-dom/client', 'zustand', '@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities']
+    },
     plugins: [react(), tailwindcss()]
   }
 })
