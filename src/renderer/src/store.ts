@@ -55,6 +55,11 @@ interface State {
   addSegment(sourceId: string, start: number, end: number): Segment | null
   removeSegment(id: string): void
   selectSegment(id: string | null): void
+  /** Splits at a source time; the second half starts at the keyframe at or before it. */
+  splitSegment(id: string, sourceTime: number): [Segment, Segment] | null
+  /** Moves a segment edge to a source time (starts snap to keyframes). */
+  trimSegment(id: string, side: 'start' | 'end', sourceTime: number): boolean
+  moveSegment(id: string, toIndex: number): void
 
   showToast(message: string, kind?: Toast['kind']): void
 }
@@ -155,6 +160,48 @@ export const useStore = create<State>((set, get) => ({
 
   selectSegment(id) {
     set({ selectedSegmentId: id })
+  },
+
+  splitSegment(id, sourceTime) {
+    const s = get()
+    const index = s.segments.findIndex((seg) => seg.id === id)
+    const seg = s.segments[index]
+    if (!seg) return null
+    const item = s.media.find((m) => m.id === seg.sourceId)
+    const secondStart = snapToKeyframe(item?.keyframes ?? null, sourceTime)
+    if (sourceTime - seg.start < MIN_SEGMENT || seg.end - sourceTime < MIN_SEGMENT) return null
+    if (secondStart - seg.start < MIN_SEGMENT) return null
+    const first: Segment = { ...seg, end: sourceTime }
+    const second: Segment = { id: uid('s'), sourceId: seg.sourceId, start: secondStart, end: seg.end }
+    const segments = [...s.segments]
+    segments.splice(index, 1, first, second)
+    set({ segments, selectedSegmentId: first.id })
+    return [first, second]
+  },
+
+  trimSegment(id, side, sourceTime) {
+    const s = get()
+    const seg = s.segments.find((x) => x.id === id)
+    if (!seg) return false
+    const item = s.media.find((m) => m.id === seg.sourceId)
+    const next =
+      side === 'start'
+        ? { ...seg, start: snapToKeyframe(item?.keyframes ?? null, sourceTime) }
+        : { ...seg, end: sourceTime }
+    if (next.end - next.start < MIN_SEGMENT || (side === 'start' && next.start <= seg.start)) return false
+    set({ segments: s.segments.map((x) => (x.id === id ? next : x)) })
+    return true
+  },
+
+  moveSegment(id, toIndex) {
+    set((s) => {
+      const from = s.segments.findIndex((seg) => seg.id === id)
+      if (from < 0 || from === toIndex) return s
+      const segments = [...s.segments]
+      const [moved] = segments.splice(from, 1)
+      segments.splice(Math.max(0, Math.min(toIndex, segments.length)), 0, moved)
+      return { segments }
+    })
   },
 
   showToast(message, kind = 'info') {
