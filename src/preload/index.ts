@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC, type EzClipApi } from '../shared/api'
+import type { ExportProgress } from '../shared/types'
 
 const api: EzClipApi = {
   getPathForFile: (file) => webUtils.getPathForFile(file),
@@ -11,6 +12,15 @@ const api: EzClipApi = {
   setSettings: (patch) => ipcRenderer.invoke(IPC.setSettings, patch),
   chooseOutputDir: () => ipcRenderer.invoke(IPC.chooseOutputDir),
   ffmpegInfo: () => ipcRenderer.invoke(IPC.ffmpegInfo),
+  exportLossless: (request) => ipcRenderer.invoke(IPC.exportLossless, request),
+  cancelExport: () => ipcRenderer.invoke(IPC.cancelExport),
+  onExportProgress: (listener) => {
+    const handler = (_e: Electron.IpcRendererEvent, progress: ExportProgress): void => listener(progress)
+    ipcRenderer.on(IPC.exportProgress, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.exportProgress, handler)
+    }
+  },
   revealInFolder: (filePath) => ipcRenderer.invoke(IPC.revealInFolder, filePath)
 }
 

@@ -1,7 +1,8 @@
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { IPC, VIDEO_EXTENSIONS } from '../shared/api'
-import type { Settings } from '../shared/types'
+import type { ExportRequest, Settings } from '../shared/types'
 import { getFfmpegInfo } from './binaries'
+import { cancelExport, exportLossless } from './export'
 import { keyframes, probe, thumbnail } from './media'
 import { allowMediaPath } from './mediaProtocol'
 import { loadSettings, saveSettings } from './settings'
@@ -51,6 +52,16 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.ffmpegInfo, () => getFfmpegInfo())
+
+  ipcMain.handle(IPC.exportLossless, async (e, request: ExportRequest) => {
+    const result = await exportLossless(request, (progress) => {
+      if (!e.sender.isDestroyed()) e.sender.send(IPC.exportProgress, progress)
+    })
+    if (result.ok && (await loadSettings()).revealAfterExport) shell.showItemInFolder(result.outputPath)
+    return result
+  })
+
+  ipcMain.handle(IPC.cancelExport, () => cancelExport())
 
   ipcMain.handle(IPC.revealInFolder, (_e, filePath: string) => {
     shell.showItemInFolder(filePath)
