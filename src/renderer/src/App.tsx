@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react'
-import type { FfmpegInfo } from '../../shared/types'
+import { DropOverlay } from './components/DropOverlay'
+import { MediaBin } from './components/MediaBin'
+import { ShortcutBar } from './components/ShortcutBar'
+import { SourceScrubber } from './components/SourceScrubber'
+import { ToastView } from './components/ToastView'
+import { Transport } from './components/Transport'
+import { Viewer } from './components/Viewer'
+import { useShortcuts } from './hooks/useShortcuts'
+import { useStore } from './store'
 
 export default function App() {
-  const [ffmpeg, setFfmpeg] = useState<FfmpegInfo | null>(null)
-  const [ffmpegError, setFfmpegError] = useState<string | null>(null)
-
-  useEffect(() => {
-    window.ezclip
-      .ffmpegInfo()
-      .then(setFfmpeg)
-      .catch((e: unknown) => setFfmpegError(String(e)))
-  }, [])
+  useShortcuts()
+  const activeItem = useStore((s) => s.media.find((m) => m.id === s.activeSourceId))
+  const segmentCount = useStore((s) => s.segments.length)
 
   return (
     <div className="flex h-full flex-col">
@@ -18,17 +19,21 @@ export default function App() {
         <span className="text-lg font-semibold tracking-tight">
           Ez<span className="text-accent">-clip</span>
         </span>
-        <span className="ml-auto text-xs text-zinc-500">
-          {ffmpegError
-            ? `FFmpeg error: ${ffmpegError}`
-            : ffmpeg
-              ? `${ffmpeg.version.replace(/ Copyright.*/, '')} · ${ffmpeg.hwEncoders.length} HW encoders`
-              : 'Loading FFmpeg…'}
-        </span>
+        <span className="ml-auto text-xs text-zinc-500">{segmentCount} clip{segmentCount === 1 ? '' : 's'} on timeline</span>
       </header>
-      <main className="flex min-h-0 flex-1 items-center justify-center text-zinc-500">
-        Foundation ready.
-      </main>
+
+      <div className="flex min-h-0 flex-1">
+        <MediaBin />
+        <section className="flex min-w-0 flex-1 flex-col">
+          <Viewer />
+          {activeItem && <SourceScrubber item={activeItem} />}
+          <Transport />
+        </section>
+      </div>
+
+      <ShortcutBar />
+      <DropOverlay />
+      <ToastView />
     </div>
   )
 }
