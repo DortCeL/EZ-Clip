@@ -16,7 +16,7 @@ export const IPC = {
   setSettings: 'settings:set',
   chooseOutputDir: 'settings:choose-output-dir',
   ffmpegInfo: 'ffmpeg:info',
-  exportLossless: 'export:lossless',
+  exportVideo: 'export:start',
   cancelExport: 'export:cancel',
   exportProgress: 'export:progress',
   revealInFolder: 'shell:reveal'
@@ -33,7 +33,7 @@ export interface EzClipApi {
   setSettings(patch: Partial<Settings>): Promise<Settings>
   chooseOutputDir(): Promise<string | null>
   ffmpegInfo(): Promise<FfmpegInfo>
-  exportLossless(request: ExportRequest): Promise<ExportResult>
+  exportVideo(request: ExportRequest): Promise<ExportResult>
   cancelExport(): Promise<void>
   onExportProgress(listener: (progress: ExportProgress) => void): () => void
   revealInFolder(path: string): Promise<void>

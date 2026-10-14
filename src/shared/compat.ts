@@ -50,3 +50,8 @@ export function checkCompatibility(infos: MediaInfo[]): string[] {
   }
   return [...issues]
 }
+
+/** Audio tracks a re-encoded export keeps: all of them, or as many as every source has. */
+export function encodedAudioTracks(infos: MediaInfo[]): number {
+  return infos.length === 0 ? 0 : Math.min(...infos.map((i) => i.audio.length))
+}

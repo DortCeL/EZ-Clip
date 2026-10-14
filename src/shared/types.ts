@@ -1,3 +1,5 @@
+import type { EncoderOption, VideoCodec } from './encoding'
+
 export interface VideoStreamInfo {
   codec: string
   profile?: string
@@ -36,6 +38,9 @@ export interface Settings {
   outputDir: string
   filePrefix: string
   revealAfterExport: boolean
+  /** 100 = lossless stream copy; lower re-encodes at that percentage of the source bitrate. */
+  exportQuality: number
+  exportCodec: VideoCodec
 }
 
 export interface FfmpegInfo {
@@ -43,6 +48,8 @@ export interface FfmpegInfo {
   ffprobePath: string
   version: string
   hwEncoders: string[]
+  /** Best working encoder per codec, verified with a test encode. */
+  videoEncoders: EncoderOption[]
 }
 
 export interface ExportSegment {
@@ -53,9 +60,11 @@ export interface ExportSegment {
 
 export interface ExportRequest {
   segments: ExportSegment[]
+  quality: number
+  codec: VideoCodec
 }
 
-export type ExportPhase = 'cutting' | 'joining' | 'finalizing'
+export type ExportPhase = 'cutting' | 'encoding' | 'joining' | 'finalizing'
 
 export interface ExportProgress {
   phase: ExportPhase

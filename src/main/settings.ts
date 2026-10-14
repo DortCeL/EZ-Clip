@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { LOSSLESS_QUALITY, MIN_QUALITY } from '../shared/encoding'
 import type { Settings } from '../shared/types'
 
 const settingsFile = (): string => path.join(app.getPath('userData'), 'settings.json')
@@ -9,7 +10,9 @@ function defaults(): Settings {
   return {
     outputDir: path.join(app.getPath('videos'), 'Ez-clip'),
     filePrefix: 'EzClip',
-    revealAfterExport: true
+    revealAfterExport: true,
+    exportQuality: LOSSLESS_QUALITY,
+    exportCodec: 'h264'
   }
 }
 
@@ -29,6 +32,7 @@ export async function loadSettings(): Promise<Settings> {
 export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
   const next = { ...(await loadSettings()), ...patch }
   next.filePrefix = sanitizePrefix(next.filePrefix)
+  next.exportQuality = Math.round(Math.min(LOSSLESS_QUALITY, Math.max(MIN_QUALITY, next.exportQuality)))
   const file = settingsFile()
   const tmp = `${file}.tmp`
   await fs.mkdir(path.dirname(file), { recursive: true })

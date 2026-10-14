@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { checkCompatibility } from '../shared/compat'
+import { checkCompatibility, encodedAudioTracks } from '../shared/compat'
+import { ENCODED_AUDIO_BITRATE, LOSSLESS_QUALITY, targetVideoBitrate } from '../shared/encoding'
 import { timestampedName } from '../shared/naming'
-import type { ExportProgress, ExportRequest, ExportResult, ExportSegment } from '../shared/types'
-import { ffmpegPath } from './binaries'
+import type { ExportProgress, ExportRequest, ExportResult, ExportSegment, MediaInfo } from '../shared/types'
+import { ffmpegPath, getFfmpegInfo } from './binaries'
 import { probe } from './media'
 import { loadSettings } from './settings'
 
@@ -20,7 +21,16 @@ export function cancelExport(): void {
   activeJob?.cancel()
 }
 
-export async function exportLossless(
+/** How a compressed export encodes every part, so the parts can be joined by stream copy. */
+interface EncodePlan {
+  encoder: string
+  quality: number
+  /** Set when sources differ: every part is converted to the first source's format. */
+  normalize: { width: number; height: number; fps: string } | null
+  audioTracks: number
+}
+
+export async function exportVideo(
   request: ExportRequest,
   onProgress: (p: ExportProgress) => void
 ): Promise<ExportResult> {
@@ -43,10 +53,27 @@ export async function exportLossless(
   let tmpDir: string | null = null
   try {
     const sources = [...new Set(segments.map((s) => s.path))]
-    const infos = await Promise.all(sources.map((p) => probe(p)))
-    const issues = checkCompatibility(infos)
-    if (issues.length > 0) {
-      return { ok: false, error: `These clips can't be joined losslessly: ${issues.join('; ')}` }
+    const infos = new Map(await Promise.all(sources.map(async (p) => [p, await probe(p)] as const)))
+    const infoList = [...infos.values()]
+    const issues = checkCompatibility(infoList)
+    const lossless = request.quality >= LOSSLESS_QUALITY
+
+    let plan: EncodePlan | null = null
+    if (lossless) {
+      if (issues.length > 0) {
+        return { ok: false, error: `These clips can't be joined losslessly: ${issues.join('; ')}` }
+      }
+    } else {
+      const encoder = (await getFfmpegInfo()).videoEncoders.find((e) => e.codec === request.codec)
+      if (!encoder) return { ok: false, error: `No working ${request.codec.toUpperCase()} encoder found` }
+      const ref = infoList[0].video
+      plan = {
+        encoder: encoder.encoder,
+        quality: request.quality,
+        normalize:
+          issues.length > 0 && ref ? { width: ref.width, height: ref.height, fps: ref.fpsNominal } : null,
+        audioTracks: encodedAudioTracks(infoList)
+      }
     }
 
     const settings = await loadSettings()
@@ -58,10 +85,15 @@ export async function exportLossless(
       if (canceled) return Promise.reject(new CanceledError())
       return runFfmpeg(args, onTime, processes, () => canceled)
     }
+    const partArgs = (seg: ExportSegment, out: string): string[] =>
+      plan ? encodeArgs(seg, infos.get(seg.path)!, plan, out) : cutArgs(seg, out)
+    const phase = plan ? 'encoding' : 'cutting'
+    // Joining is a stream copy either way; when encoding, nearly all the time goes to the parts.
+    const partsWeight = plan ? 0.95 : 0.5
 
     if (segments.length === 1) {
-      await run(cutArgs(segments[0], outputPath), (sec) =>
-        onProgress({ phase: 'cutting', progress: Math.min(1, sec / total), segmentIndex: 0, segmentCount: 1 })
+      await run(partArgs(segments[0], outputPath), (sec) =>
+        onProgress({ phase, progress: Math.min(1, sec / total), segmentIndex: 0, segmentCount: 1 })
       )
     } else {
       tmpDir = await fs.mkdtemp(path.join(settings.outputDir, '.ezclip-tmp-'))
@@ -69,10 +101,10 @@ export async function exportLossless(
       let done = 0
       for (const [i, seg] of segments.entries()) {
         const part = path.join(tmpDir, `part_${String(i).padStart(3, '0')}.mp4`)
-        await run(cutArgs(seg, part), (sec) =>
+        await run(partArgs(seg, part), (sec) =>
           onProgress({
-            phase: 'cutting',
-            progress: (0.5 * Math.min(total, done + sec)) / total,
+            phase,
+            progress: (partsWeight * Math.min(total, done + sec)) / total,
             segmentIndex: i,
             segmentCount: segments.length
           })
@@ -84,7 +116,7 @@ export async function exportLossless(
       const listFile = path.join(tmpDir, 'list.txt')
       await fs.writeFile(listFile, parts.map((p) => `file '${escapeConcatPath(p)}'`).join('\n'), 'utf8')
       await run(concatArgs(listFile, outputPath), (sec) =>
-        onProgress({ phase: 'joining', progress: 0.5 + (0.5 * Math.min(total, sec)) / total })
+        onProgress({ phase: 'joining', progress: partsWeight + ((1 - partsWeight) * Math.min(total, sec)) / total })
       )
     }
 
@@ -116,6 +148,46 @@ function cutArgs(seg: ExportSegment, out: string): string[] {
     '-movflags', '+faststart',
     out
   ]
+}
+
+// Input -ss with re-encoding decodes from the previous keyframe and drops frames before the
+// seek point, so encoded parts start exactly at seg.start.
+function encodeArgs(seg: ExportSegment, info: MediaInfo, plan: EncodePlan, out: string): string[] {
+  const bitrate = targetVideoBitrate(info, plan.quality)
+  const args = [
+    '-ss', seg.start.toFixed(6),
+    '-i', seg.path,
+    '-t', (seg.end - seg.start).toFixed(6),
+    '-map', '0:v:0'
+  ]
+
+  for (let i = 0; i < plan.audioTracks; i++) args.push('-map', `0:a:${i}`)
+  if (plan.audioTracks > 0) {
+    args.push('-c:a', 'aac', '-b:a', String(ENCODED_AUDIO_BITRATE), '-ar', '48000')
+    if (plan.normalize) args.push('-ac', '2')
+  }
+
+  if (plan.normalize) {
+    const { width: w, height: h, fps } = plan.normalize
+    args.push(
+      '-vf',
+      `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}`
+    )
+  }
+
+  args.push('-c:v', plan.encoder, ...rateControlArgs(plan.encoder, bitrate), '-pix_fmt', 'yuv420p')
+  if (plan.encoder.startsWith('hevc') || plan.encoder === 'libx265') args.push('-tag:v', 'hvc1')
+  args.push('-avoid_negative_ts', 'make_zero', '-map_metadata', '0', '-movflags', '+faststart', out)
+  return args
+}
+
+/** Average-bitrate targeting so the output size is predictable, with headroom for fast action. */
+function rateControlArgs(encoder: string, bitrate: number): string[] {
+  const rate = ['-b:v', String(bitrate), '-maxrate', String(Math.round(bitrate * 1.5)), '-bufsize', String(bitrate * 2)]
+  if (encoder.endsWith('_nvenc')) {
+    return ['-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-multipass', 'qres', '-spatial-aq', '1', ...rate]
+  }
+  return ['-preset', 'medium', ...rate]
 }
 
 function concatArgs(listFile: string, out: string): string[] {

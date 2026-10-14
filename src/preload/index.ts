@@ -12,7 +12,7 @@ const api: EzClipApi = {
   setSettings: (patch) => ipcRenderer.invoke(IPC.setSettings, patch),
   chooseOutputDir: () => ipcRenderer.invoke(IPC.chooseOutputDir),
   ffmpegInfo: () => ipcRenderer.invoke(IPC.ffmpegInfo),
-  exportLossless: (request) => ipcRenderer.invoke(IPC.exportLossless, request),
+  exportVideo: (request) => ipcRenderer.invoke(IPC.exportVideo, request),
   cancelExport: () => ipcRenderer.invoke(IPC.cancelExport),
   onExportProgress: (listener) => {
     const handler = (_e: Electron.IpcRendererEvent, progress: ExportProgress): void => listener(progress)
