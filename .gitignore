@@ -3,6 +3,7 @@ out/
 dist/
 release/
 *.log
+*.tsbuildinfo
 .ezclip-tmp-*/
 .DS_Store
 Thumbs.db
