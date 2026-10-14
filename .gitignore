@@ -1,0 +1,8 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+.ezclip-tmp-*/
+.DS_Store
+Thumbs.db
