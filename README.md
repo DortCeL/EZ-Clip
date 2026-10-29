@@ -4,7 +4,7 @@ Fast trimming and joining for gaming clips on Windows. Import clips, edit on a t
 
 ## Download
 
-Get the latest **`setup.exe`** from [Releases](https://github.com/PLACEHOLDER/Ez-clip/releases). Run it and follow the installer.
+Get the latest **`setup.exe`** from [Releases](https://github.com/DortCeL/EZ-Clip/releases). Run it and follow the installer.
 
 Windows may show SmartScreen because the app is not code-signed. Choose **More info** → **Run anyway** if that appears.
 
