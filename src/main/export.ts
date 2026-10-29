@@ -1,10 +1,26 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { promises as fs } from 'node:fs'
+import { app } from 'electron'
+import { existsSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { checkCompatibility, encodedAudioTracks } from '../shared/compat'
-import { ENCODED_AUDIO_BITRATE, LOSSLESS_QUALITY, targetVideoBitrate } from '../shared/encoding'
-import { timestampedName } from '../shared/naming'
-import type { ExportProgress, ExportRequest, ExportResult, ExportSegment, MediaInfo } from '../shared/types'
+import {
+  codecForEncoder,
+  ENCODED_AUDIO_BITRATE,
+  LOSSLESS_QUALITY,
+  sameLookMaxBitrate,
+  sameLookVideoBitrate,
+  targetVideoBitrate
+} from '../shared/encoding'
+import { outputDuration, segmentSpeed } from '../shared/speed'
+import { exportFileStem, timestampedName } from '../shared/naming'
+import type {
+  ExportProgress,
+  ExportQualityMode,
+  ExportRequest,
+  ExportResult,
+  ExportSegment,
+  MediaInfo
+} from '../shared/types'
 import { ffmpegPath, getFfmpegInfo } from './binaries'
 import { probe } from './media'
 import { loadSettings } from './settings'
@@ -25,8 +41,12 @@ export function cancelExport(): void {
 interface EncodePlan {
   encoder: string
   quality: number
+  /** Re-encode under the source bitrate so the picture stays and the file gets smaller. */
+  sameLook: boolean
   /** Set when sources differ: every part is converted to the first source's format. */
   normalize: { width: number; height: number; fps: string } | null
+  /** Forces one frame rate so a slowed part can be joined to the others. */
+  lockFps: string | null
   audioTracks: number
 }
 
@@ -36,7 +56,9 @@ export async function exportVideo(
 ): Promise<ExportResult> {
   if (activeJob) return { ok: false, error: 'An export is already running' }
 
-  const segments = request.segments.filter((s) => s.end - s.start > 0.01)
+  const segments = request.segments
+    .filter((s) => s.end - s.start > 0.01)
+    .map((s) => ({ ...s, speed: segmentSpeed(s.speed) }))
   if (segments.length === 0) return { ok: false, error: 'Nothing to export — the timeline is empty' }
 
   const started = Date.now()
@@ -56,7 +78,11 @@ export async function exportVideo(
     const infos = new Map(await Promise.all(sources.map(async (p) => [p, await probe(p)] as const)))
     const infoList = [...infos.values()]
     const issues = checkCompatibility(infoList)
-    const lossless = request.quality >= LOSSLESS_QUALITY
+    const anySpeed = segments.some((s) => s.speed !== 1)
+    const mode = qualityMode(request)
+    const sameLook = mode === 'same'
+    // A speed change cannot be stream-copied, and a copied part cannot be joined to a re-encoded one.
+    const lossless = mode === 'lossless' && !anySpeed
 
     let plan: EncodePlan | null = null
     if (lossless) {
@@ -70,17 +96,22 @@ export async function exportVideo(
       plan = {
         encoder: encoder.encoder,
         quality: request.quality,
+        sameLook,
         normalize:
           issues.length > 0 && ref ? { width: ref.width, height: ref.height, fps: ref.fpsNominal } : null,
+        lockFps: anySpeed && segments.length > 1 && ref ? ref.fpsNominal : null,
         audioTracks: encodedAudioTracks(infoList)
       }
     }
 
     const settings = await loadSettings()
-    await fs.mkdir(settings.outputDir, { recursive: true })
-    outputPath = await reserveOutputPath(settings.outputDir, settings.filePrefix, 'mp4')
+    const outputDir = request.outputDir?.trim() || settings.outputDir
+    await fs.mkdir(outputDir, { recursive: true })
+    const stem = exportFileStem(request.fileName ?? '', timestampedName(settings.filePrefix, new Date()))
+    outputPath = await reserveOutputPath(outputDir, stem, 'mp4')
 
-    const total = segments.reduce((sum, s) => sum + (s.end - s.start), 0)
+    const span = (s: ExportSegment): number => outputDuration(s.start, s.end, s.speed)
+    const total = segments.reduce((sum, s) => sum + span(s), 0)
     const run = (args: string[], onTime: (sec: number) => void): Promise<void> => {
       if (canceled) return Promise.reject(new CanceledError())
       return runFfmpeg(args, onTime, processes, () => canceled)
@@ -109,7 +140,7 @@ export async function exportVideo(
             segmentCount: segments.length
           })
         )
-        done += seg.end - seg.start
+        done += span(seg)
         parts.push(part)
       }
 
@@ -150,39 +181,111 @@ function cutArgs(seg: ExportSegment, out: string): string[] {
   ]
 }
 
+function videoFilterFor(seg: ExportSegment, plan: EncodePlan): string | null {
+  const speed = segmentSpeed(seg.speed)
+  const chain: string[] = []
+  if (plan.normalize) {
+    const { width: w, height: h } = plan.normalize
+    chain.push(
+      `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`
+    )
+  }
+  if (speed !== 1) chain.push(`setpts=${(1 / speed).toFixed(6)}*(PTS-STARTPTS)`)
+  const fps = plan.normalize?.fps ?? plan.lockFps
+  if (fps) chain.push(`fps=${fps}`)
+  return chain.length > 0 ? chain.join(',') : null
+}
+
+/** Fast-forward graphic drawn onto sped-up frames. */
+function fastForwardPng(): string | null {
+  const candidates = [
+    path.join(process.cwd(), 'resources', 'fast-forward.png'),
+    path.join(app.getAppPath(), 'resources', 'fast-forward.png'),
+    path.join(process.resourcesPath, 'fast-forward.png')
+  ]
+  return candidates.find((file) => existsSync(file)) ?? null
+}
+
+function speedMarkGraph(chain: string | null): string {
+  const prep = chain ? `[0:v]${chain}[base]` : '[0:v]null[base]'
+  return [
+    prep,
+    '[1:v]format=rgba[marksrc]',
+    '[marksrc][base]scale2ref=w=ih*0.2:h=ih*0.2[mark][base2]',
+    "[base2][mark]overlay=x='W-w-W/28':y='H/28':shortest=1:format=auto[v]"
+  ].join(';')
+}
+
 // Input -ss with re-encoding decodes from the previous keyframe and drops frames before the
 // seek point, so encoded parts start exactly at seg.start.
 function encodeArgs(seg: ExportSegment, info: MediaInfo, plan: EncodePlan, out: string): string[] {
-  const bitrate = targetVideoBitrate(info, plan.quality)
-  const args = [
-    '-ss', seg.start.toFixed(6),
-    '-i', seg.path,
-    '-t', (seg.end - seg.start).toFixed(6),
-    '-map', '0:v:0'
-  ]
+  const speed = segmentSpeed(seg.speed)
+  const sourceDur = (seg.end - seg.start).toFixed(6)
+  const mark = speed > 1 ? fastForwardPng() : null
+  // -t after -i limits the output. A slowed clip is longer than the source range, so the
+  // limit has to be on the input or ffmpeg would cut the slow motion short.
+  const args =
+    speed === 1
+      ? ['-ss', seg.start.toFixed(6), '-i', seg.path, '-t', sourceDur]
+      : ['-ss', seg.start.toFixed(6), '-t', sourceDur, '-i', seg.path]
+  if (mark) args.push('-loop', '1', '-i', mark)
+
+  const videoFilter = videoFilterFor(seg, plan)
+  if (mark) {
+    args.push('-filter_complex', speedMarkGraph(videoFilter), '-map', '[v]')
+  } else {
+    args.push('-map', '0:v:0')
+    if (videoFilter) args.push('-vf', videoFilter)
+  }
 
   for (let i = 0; i < plan.audioTracks; i++) args.push('-map', `0:a:${i}`)
   if (plan.audioTracks > 0) {
     args.push('-c:a', 'aac', '-b:a', String(ENCODED_AUDIO_BITRATE), '-ar', '48000')
     if (plan.normalize) args.push('-ac', '2')
+    if (speed !== 1) {
+      for (let i = 0; i < plan.audioTracks; i++) {
+        const rate = info.audio[i]?.sampleRate || 48000
+        const tuned = Math.max(1000, Math.round(rate * speed))
+        // asetrate keeps the samples and changes the rate, so pitch moves with speed.
+        args.push(`-filter:a:${i}`, `asetrate=${tuned},aresample=48000`)
+      }
+    }
   }
 
-  if (plan.normalize) {
-    const { width: w, height: h, fps } = plan.normalize
-    args.push(
-      '-vf',
-      `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}`
-    )
-  }
-
-  args.push('-c:v', plan.encoder, ...rateControlArgs(plan.encoder, bitrate), '-pix_fmt', 'yuv420p')
+  args.push('-c:v', plan.encoder, ...rateControlArgs(plan.encoder, plan, info), '-pix_fmt', 'yuv420p')
   if (plan.encoder.startsWith('hevc') || plan.encoder === 'libx265') args.push('-tag:v', 'hvc1')
   args.push('-avoid_negative_ts', 'make_zero', '-map_metadata', '0', '-movflags', '+faststart', out)
   return args
 }
 
+/**
+ * High-quality encode capped under the recording's own bitrate.
+ * An open quality target (CQ with unlimited bitrate) spends more bits than the capture and the file grows.
+ */
+function sameLookArgs(encoder: string, info: MediaInfo): string[] {
+  const codec = codecForEncoder(encoder)
+  const target = sameLookVideoBitrate(info, codec)
+  const peak = sameLookMaxBitrate(info, codec)
+  const cap = ['-maxrate', String(peak), '-bufsize', String(peak * 2)]
+  if (encoder.endsWith('_nvenc')) {
+    return [
+      '-preset', 'p6',
+      '-tune', 'hq',
+      '-rc', 'vbr',
+      '-b:v', String(target),
+      ...cap,
+      '-spatial-aq', '1',
+      '-multipass', 'qres'
+    ]
+  }
+  const crf = encoder === 'libx265' ? '22' : '20'
+  return ['-preset', 'medium', '-crf', crf, ...cap]
+}
+
 /** Average-bitrate targeting so the output size is predictable, with headroom for fast action. */
-function rateControlArgs(encoder: string, bitrate: number): string[] {
+function rateControlArgs(encoder: string, plan: EncodePlan, info: MediaInfo): string[] {
+  if (plan.sameLook) return sameLookArgs(encoder, info)
+  const bitrate = targetVideoBitrate(info, plan.quality)
   const rate = ['-b:v', String(bitrate), '-maxrate', String(Math.round(bitrate * 1.5)), '-bufsize', String(bitrate * 2)]
   if (encoder.endsWith('_nvenc')) {
     return ['-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-multipass', 'qres', '-spatial-aq', '1', ...rate]
@@ -202,13 +305,18 @@ function concatArgs(listFile: string, out: string): string[] {
   ]
 }
 
+function qualityMode(request: ExportRequest): ExportQualityMode {
+  if (request.mode === 'lossless' || request.mode === 'same' || request.mode === 'bitrate') return request.mode
+  if (request.sameLook) return 'same'
+  return request.quality >= LOSSLESS_QUALITY ? 'lossless' : 'bitrate'
+}
+
 function escapeConcatPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/'/g, "'\\''")
 }
 
 /** Creates an empty placeholder so concurrent exports never pick the same name. */
-async function reserveOutputPath(dir: string, prefix: string, ext: string): Promise<string> {
-  const base = timestampedName(prefix, new Date())
+async function reserveOutputPath(dir: string, base: string, ext: string): Promise<string> {
   for (let n = 1; n < 1000; n++) {
     const candidate = path.join(dir, `${base}${n === 1 ? '' : `_${n}`}.${ext}`)
     try {

@@ -1,4 +1,5 @@
 import { VIDEO_EXTENSIONS } from '../../../shared/api'
+import { addWholeClip } from './timelineActions'
 import { useStore } from '../store'
 
 const isVideo = (p: string): boolean =>
@@ -14,7 +15,7 @@ export async function importPaths(paths: string[]): Promise<void> {
     return
   }
 
-  await Promise.all(fresh.map(importOne))
+  for (const filePath of fresh) await importOne(filePath)
 }
 
 async function importOne(filePath: string): Promise<void> {
@@ -25,23 +26,25 @@ async function importOne(filePath: string): Promise<void> {
     if (!info.video) throw new Error('No video stream found')
     const item = useStore.getState().addMedia(info)
     if (!useStore.getState().activeSourceId) useStore.getState().setActiveSource(item.id)
-
-    void window.ezclip
-      .thumbnail(filePath, Math.min(3, info.duration / 3))
-      .then((thumbnail) => useStore.getState().updateMedia(item.id, { thumbnail }))
-
-    window.ezclip
-      .keyframes(filePath)
-      .then((keyframes) =>
-        useStore.getState().updateMedia(item.id, { keyframes, keyframeStatus: 'ready' })
-      )
-      .catch(() => useStore.getState().updateMedia(item.id, { keyframeStatus: 'error' }))
+    addWholeClip(item.id)
+    startIndexing(item.id, filePath, info.duration)
   } catch (e) {
     const name = filePath.split(/[\\/]/).pop()
     useStore.getState().showToast(`Couldn't import ${name}: ${errorMessage(e)}`, 'error')
   } finally {
     useStore.getState().setImporting(-1)
   }
+}
+
+export function startIndexing(id: string, filePath: string, duration: number): void {
+  void window.ezclip
+    .thumbnail(filePath, Math.min(3, duration / 3))
+    .then((thumbnail) => useStore.getState().updateMedia(id, { thumbnail }))
+
+  window.ezclip
+    .keyframes(filePath)
+    .then((keyframes) => useStore.getState().updateMedia(id, { keyframes, keyframeStatus: 'ready' }))
+    .catch(() => useStore.getState().updateMedia(id, { keyframeStatus: 'error' }))
 }
 
 export function errorMessage(e: unknown): string {

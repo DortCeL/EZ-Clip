@@ -6,3 +6,17 @@ export function timestampedName(prefix: string, date: Date): string {
   const time = `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
   return `${prefix}_${day}_${time}`
 }
+
+const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+
+/** A single file name with no folders. Empty or reserved names fall back. */
+export function exportFileStem(name: string, fallback: string): string {
+  const cleaned = name
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
+    .replace(/\.mp4$/i, '')
+    .trim()
+    .replace(/\.+$/g, '')
+    .slice(0, 120)
+  if (!cleaned || RESERVED_NAME.test(cleaned)) return fallback
+  return cleaned
+}

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { mediaUrl } from '../../shared/api'
+import { segmentSpeed } from '../../shared/speed'
 import { layoutSequence, locate, type SequenceLayout } from './lib/sequence'
 import { getMedia, useStore, type MediaItem } from './store'
 
@@ -109,7 +110,9 @@ class PlayerEngine {
     const p = this.layout.placed[this.segIndex]
     if (!p) return this.timelineTime
     if (this.transitioning) return this.timelineTime
-    return p.offset + Math.min(Math.max(v - p.seg.start, 0), p.duration)
+    const sourceSpan = p.playEnd - p.playStart
+    const sourceDelta = Math.min(Math.max(v - p.playStart, 0), sourceSpan)
+    return p.offset + sourceDelta / segmentSpeed(p.seg.speed)
   }
 
   get duration(): number {
@@ -261,7 +264,7 @@ class PlayerEngine {
     const p = this.layout.placed[this.segIndex]
     const video = this.video
     if (!p || !video || this.transitioning) return
-    if (video.currentTime >= p.seg.end - BOUNDARY_EPSILON) void this.advance(!video.paused)
+    if (video.currentTime >= p.playEnd - BOUNDARY_EPSILON) void this.advance(!video.paused)
   }
 
   private async advance(keepPlaying: boolean): Promise<void> {
@@ -277,15 +280,21 @@ class PlayerEngine {
     const contiguous =
       current &&
       current.item.info.path === next.item.info.path &&
-      Math.abs(current.seg.end - next.seg.start) < BOUNDARY_EPSILON
+      Math.abs(current.playEnd - next.playStart) < BOUNDARY_EPSILON
+    const sameRate = !!current && segmentSpeed(current.seg.speed) === segmentSpeed(next.seg.speed)
     this.segIndex++
     this.followSelection()
-    if (contiguous) return
+    if (contiguous && sameRate) return
+    if (contiguous) {
+      this.applyRate()
+      return
+    }
 
     this.transitioning = true
     this.timelineTime = next.offset
     try {
-      await this.load(next.item.info.path, next.seg.start)
+      await this.load(next.item.info.path, next.playStart)
+      this.applyRate()
       if (keepPlaying && this.video) await this.video.play().catch(() => undefined)
     } finally {
       this.transitioning = false
@@ -313,10 +322,11 @@ class PlayerEngine {
     const wasPlaying = !!this.video && !this.video.paused
     this.segIndex = index
     this.timelineTime = clamped
-    const sourceTime = Math.min(p.seg.start + (clamped - p.offset), p.seg.end)
+    const sourceTime = Math.min(p.playStart + (clamped - p.offset) * segmentSpeed(p.seg.speed), p.playEnd)
     if (this.loadedPath !== p.item.info.path) this.transitioning = true
     try {
       await this.load(p.item.info.path, sourceTime)
+      this.applyRate()
       if (wasPlaying && this.video?.paused) await this.video.play().catch(() => undefined)
     } finally {
       this.transitioning = false
@@ -356,9 +366,25 @@ class PlayerEngine {
       void this.seek(0).then(() => this.play(speed))
       return
     }
-    video.playbackRate = speed
     usePlayback.setState({ speed })
+    this.applyRate()
     void video.play()
+  }
+
+  /**
+   * Shuttle speed times the clip's own speed. A slowed clip also drops the pitch,
+   * and a sped-up clip raises it; plain J/K/L review does not.
+   */
+  private applyRate(): void {
+    const video = this.video
+    if (!video) return
+    const clipSpeed = this.mode === 'timeline' ? segmentSpeed(this.layout.placed[this.segIndex]?.seg.speed) : 1
+    const shuttle = usePlayback.getState().speed
+    const forward = shuttle > 0 ? shuttle : 1
+    const keepPitch = !(this.mode === 'timeline' && clipSpeed !== 1)
+    video.playbackRate = Math.min(16, Math.max(0.0625, forward * clipSpeed))
+    video.preservesPitch = keepPitch
+    ;(video as HTMLVideoElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = keepPitch
   }
 
   pause(): void {
@@ -413,6 +439,17 @@ class PlayerEngine {
     usePlayback.setState({ playing: false, speed: 1 })
   }
 
+  /** Closes the open file so a source can be deleted after export. */
+  release(): void {
+    this.stopShuttle()
+    this.scrubbing = false
+    this.scrubTarget = null
+    this.transitioning = false
+    this.segIndex = -1
+    this.pause()
+    this.unload()
+  }
+
   /** K: stop. */
   stop(): void {
     this.pause()
@@ -425,7 +462,8 @@ class PlayerEngine {
 
   stepFrames(frames: number): void {
     this.pause()
-    void this.seek(this.time + frames / this.fps)
+    const clipSpeed = this.mode === 'timeline' ? segmentSpeed(this.layout.placed[this.segIndex]?.seg.speed) : 1
+    void this.seek(this.time + frames / this.fps / clipSpeed)
   }
 }
 

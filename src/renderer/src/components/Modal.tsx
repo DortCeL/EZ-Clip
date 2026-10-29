@@ -6,6 +6,7 @@ export function Modal(props: {
   closable?: boolean
   children: ReactNode
   footer?: ReactNode
+  widthClass?: string
 }) {
   const { onClose, closable = true } = props
 
@@ -23,7 +24,9 @@ export function Modal(props: {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onMouseDown={(e) => e.target === e.currentTarget && closable && onClose()}
     >
-      <div className="w-[560px] max-w-[92vw] overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl select-text">
+      <div
+        className={`${props.widthClass ?? 'w-[560px]'} max-w-[92vw] overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl select-text`}
+      >
         <div className="flex h-12 items-center justify-between border-b border-zinc-800 px-5">
           <h2 className="text-sm font-semibold">{props.title}</h2>
           {closable && (

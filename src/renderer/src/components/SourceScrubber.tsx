@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { formatTime } from '../lib/format'
 import { snapToKeyframe } from '../lib/keyframes'
+import { layoutSequence } from '../lib/sequence'
 import { engine, usePlayback } from '../player'
 import { useStore, type MediaItem } from '../store'
 
@@ -10,6 +11,11 @@ export function SourceScrubber({ item }: { item: MediaItem }) {
   const time = usePlayback((s) => s.time)
   const marks = useStore((s) => s.marks[item.id])
   const segments = useStore((s) => s.segments)
+  const media = useStore((s) => s.media)
+  const onTimeline = useMemo(
+    () => layoutSequence(segments, media).placed.filter((p) => p.item.id === item.id),
+    [segments, media, item.id]
+  )
   const trackRef = useRef<HTMLDivElement>(null)
   const duration = item.info.duration
 
@@ -46,16 +52,14 @@ export function SourceScrubber({ item }: { item: MediaItem }) {
       >
         <KeyframeTicks keyframes={item.keyframes} duration={duration} />
 
-        {segments
-          .filter((seg) => seg.sourceId === item.id)
-          .map((seg) => (
-            <div
-              key={seg.id}
-              className="absolute top-0 bottom-0 border-t-2 border-emerald-400/70 bg-emerald-400/15"
-              style={{ left: pct(seg.start, duration), width: pct(seg.end - seg.start, duration) }}
-              title="Already on timeline"
-            />
-          ))}
+        {onTimeline.map((p) => (
+          <div
+            key={p.seg.id}
+            className="absolute top-0 bottom-0 border-t-2 border-emerald-400/70 bg-emerald-400/15"
+            style={{ left: pct(p.playStart, duration), width: pct(p.playEnd - p.playStart, duration) }}
+            title="Already on timeline"
+          />
+        ))}
 
         {markStart != null && markEnd != null && (
           <div
@@ -71,13 +75,6 @@ export function SourceScrubber({ item }: { item: MediaItem }) {
       </div>
       <div className="mt-1 flex justify-between font-mono text-[10px] text-zinc-500">
         <span>0:00</span>
-        <span>
-          {inRaw != null && inSnapped != null && inRaw - inSnapped > 0.01 && (
-            <span className="text-amber-400/90">
-              In snapped to keyframe {formatTime(inSnapped)} (−{(inRaw - inSnapped).toFixed(2)}s)
-            </span>
-          )}
-        </span>
         <span>{formatTime(duration, false)}</span>
       </div>
     </div>

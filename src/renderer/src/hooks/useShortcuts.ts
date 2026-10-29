@@ -2,8 +2,11 @@ import { useEffect } from 'react'
 import { addMarkedRange, clearMarks, jumpKeyframe, markIn, markOut } from '../lib/actions'
 import { openImportDialog } from '../lib/importMedia'
 import {
+  copySelected,
   deleteSelected,
   jumpSegmentBoundary,
+  mergeCut,
+  pasteClipboard,
   redo,
   splitAtPlayhead,
   toggleMode,
@@ -35,6 +38,12 @@ export function useShortcuts(): void {
         } else if (k === ',') {
           e.preventDefault()
           useStore.getState().setDialog('settings')
+        } else if (k === 'c' && !e.shiftKey) {
+          e.preventDefault()
+          copySelected()
+        } else if (k === 'v' && !e.shiftKey) {
+          e.preventDefault()
+          pasteClipboard()
         } else if (k === 'z' && !e.shiftKey) {
           e.preventDefault()
           undo()
@@ -122,6 +131,11 @@ function handleKey(e: KeyboardEvent): boolean {
     case 'S':
       if (e.repeat) return true
       splitAtPlayhead()
+      return true
+    case 'm':
+    case 'M':
+      if (e.repeat) return true
+      mergeCut()
       return true
     case 'q':
     case 'Q':

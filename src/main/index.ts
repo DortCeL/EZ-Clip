@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
 import { handleMediaProtocol, registerMediaScheme } from './mediaProtocol'
+import { requestRendererFlush } from './project'
 
 registerMediaScheme()
 
@@ -24,6 +25,16 @@ function createWindow(): void {
   })
 
   win.once('ready-to-show', () => win.show())
+
+  let closing = false
+  win.on('close', (e) => {
+    if (closing) return
+    e.preventDefault()
+    closing = true
+    void requestRendererFlush(win).finally(() => {
+      if (!win.isDestroyed()) win.destroy()
+    })
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url)

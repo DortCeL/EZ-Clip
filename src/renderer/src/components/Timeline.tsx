@@ -9,9 +9,22 @@ import {
 import { horizontalListSortingStrategy, SortableContext, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { formatSpeed, segmentSpeed, SPEED_PRESETS } from '../../../shared/speed'
 import { formatTime } from '../lib/format'
-import { layoutSequence, type PlacedSegment } from '../lib/sequence'
-import { deleteSelected, redo, selectAndSeek, splitAtPlayhead, undo } from '../lib/timelineActions'
+import { layoutSequence, mergeBlocker, type PlacedSegment } from '../lib/sequence'
+import {
+  copySelected,
+  deleteSelected,
+  duplicateBeside,
+  mergeCut,
+  mergeWithNext,
+  pasteClipboard,
+  redo,
+  selectAndSeek,
+  splitAtPlayhead,
+  undo,
+  useClipClipboard
+} from '../lib/timelineActions'
 import { engine, usePlayback } from '../player'
 import { useStore } from '../store'
 
@@ -26,6 +39,7 @@ export function Timeline() {
   const selectedId = useStore((s) => s.selectedSegmentId)
   const canUndo = useStore((s) => s.past.length > 0)
   const canRedo = useStore((s) => s.future.length > 0)
+  const canPaste = useClipClipboard((s) => s.clip != null)
   const layout = useMemo(() => layoutSequence(segments, media), [segments, media])
   const [zoom, setZoom] = useState(1)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -83,61 +97,52 @@ export function Timeline() {
   }
 
   return (
-    <section
-      className={`flex h-44 shrink-0 flex-col border-t ${
-        mode === 'timeline' ? 'border-accent/60' : 'border-zinc-800'
-      } bg-zinc-950`}
-    >
-      <div className="flex h-9 shrink-0 items-center gap-3 px-4 text-xs">
-        <span className="font-semibold tracking-wider text-zinc-400 uppercase">Timeline</span>
-        <span className="text-zinc-500">
-          {layout.placed.length} clip{layout.placed.length === 1 ? '' : 's'} · {formatTime(layout.total)}
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
-            onClick={undo}
-            disabled={!canUndo}
-            title="Undo (Ctrl+Z)"
-          >
-            Undo
-          </button>
-          <button
-            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
-            onClick={redo}
-            disabled={!canRedo}
-            title="Redo (Ctrl+Y)"
-          >
-            Redo
-          </button>
-          <button
-            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-zinc-500 disabled:opacity-40"
-            onClick={splitAtPlayhead}
-            disabled={mode !== 'timeline' || layout.placed.length === 0}
-            title="Split at playhead (S)"
-          >
-            Split <kbd>S</kbd>
-          </button>
-          <button
-            className="rounded-md border border-zinc-700 px-2 py-1 hover:border-red-500 hover:text-red-300 disabled:opacity-40"
-            onClick={deleteSelected}
-            disabled={!selectedId}
-            title="Remove selected clip (Delete)"
-          >
-            Delete <kbd>Del</kbd>
-          </button>
-          <span className="ml-2 text-zinc-500">Zoom</span>
-          <input
-            type="range"
-            min={1}
-            max={30}
-            step={0.5}
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-            className="accent-accent w-28"
-          />
-        </div>
+    <section className="flex h-52 shrink-0 flex-col border-t border-zinc-800 bg-zinc-950">
+      <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto px-2 text-xs">
+        <ToolButton onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+          Undo
+        </ToolButton>
+        <ToolButton onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">
+          Redo
+        </ToolButton>
+        <ToolButton onClick={copySelected} disabled={!selectedId} title="Copy the selected clip (Ctrl+C)">
+          Copy
+        </ToolButton>
+        <ToolButton onClick={pasteClipboard} disabled={!canPaste} title="Paste a copy after the selected clip (Ctrl+V)">
+          Paste
+        </ToolButton>
+        <ToolButton
+          onClick={splitAtPlayhead}
+          disabled={mode !== 'timeline' || layout.placed.length === 0}
+          title="Split at playhead (S)"
+        >
+          Split
+        </ToolButton>
+        <ToolButton
+          onClick={() => mergeCut()}
+          disabled={!selectedId || segments.length < 2}
+          title="Join this clip with the neighboring piece of the same recording (M)"
+        >
+          Merge
+        </ToolButton>
+        <ToolButton onClick={deleteSelected} disabled={!selectedId} title="Remove selected clip (Delete)" danger>
+          Delete
+        </ToolButton>
+        <span className="ml-auto text-zinc-500">{formatTime(layout.total, false)}</span>
+        <input
+          type="range"
+          min={1}
+          max={30}
+          step={0.5}
+          value={zoom}
+          onChange={(e) => setZoom(Number(e.target.value))}
+          className="accent-accent w-24"
+          title="Zoom"
+          aria-label="Zoom"
+        />
       </div>
+
+      <SpeedRow selectedId={selectedId} />
 
       <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
         <div
@@ -151,7 +156,7 @@ export function Timeline() {
           <Ruler total={layout.total} pxPerSec={pxPerSec} />
           {layout.placed.length === 0 ? (
             <div className="pointer-events-none absolute inset-x-0 top-8 text-center text-xs text-zinc-500">
-              Mark a kill with <kbd>I</kbd> / <kbd>O</kbd> and press <kbd>A</kbd>, or use “+ Timeline” on a clip.
+              Add a clip
             </div>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
@@ -160,9 +165,20 @@ export function Timeline() {
                   className="pointer-events-none absolute top-7 bottom-3 flex"
                   style={{ left: TRACK_PADDING }}
                 >
-                  {layout.placed.map((p) => (
-                    <Block key={p.seg.id} placed={p} pxPerSec={pxPerSec} selected={p.seg.id === selectedId} />
-                  ))}
+                  {layout.placed.map((p, i) => {
+                    const prev = layout.placed[i - 1]
+                    const next = layout.placed[i + 1]
+                    return (
+                      <Block
+                        key={p.seg.id}
+                        placed={p}
+                        pxPerSec={pxPerSec}
+                        selected={p.seg.id === selectedId}
+                        prevMergeId={prev && !mergeBlocker(prev.seg, p.seg) ? prev.seg.id : null}
+                        canMergeNext={!!next && !mergeBlocker(p.seg, next.seg)}
+                      />
+                    )
+                  })}
                 </div>
               </SortableContext>
             </DndContext>
@@ -174,8 +190,50 @@ export function Timeline() {
   )
 }
 
-function Block({ placed, pxPerSec, selected }: { placed: PlacedSegment; pxPerSec: number; selected: boolean }) {
-  const { seg, item, duration } = placed
+function SpeedRow({ selectedId }: { selectedId: string | null }) {
+  const seg = useStore((s) => s.segments.find((x) => x.id === selectedId))
+  const speed = segmentSpeed(seg?.speed)
+
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-zinc-800 px-4">
+      <span className="mr-1 text-[10px] font-semibold tracking-wider text-zinc-400 uppercase">Speed</span>
+      {SPEED_PRESETS.map((preset) => {
+        const selected = !!seg && speed === preset
+        return (
+          <button
+            key={preset}
+            type="button"
+            disabled={!seg}
+            className={`rounded-md border px-2 py-0.5 font-mono text-[11px] disabled:opacity-40 ${
+              selected
+                ? 'border-accent bg-zinc-800 text-zinc-100'
+                : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+            }`}
+            onClick={() => seg && useStore.getState().setSegmentSpeed(seg.id, preset)}
+          >
+            {formatSpeed(preset)}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function Block({
+  placed,
+  pxPerSec,
+  selected,
+  prevMergeId,
+  canMergeNext
+}: {
+  placed: PlacedSegment
+  pxPerSec: number
+  selected: boolean
+  prevMergeId: string | null
+  canMergeNext: boolean
+}) {
+  const { seg, item, duration, playStart, playEnd } = placed
+  const speed = segmentSpeed(seg.speed)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: seg.id })
   const width = Math.max(4, duration * pxPerSec)
 
@@ -191,27 +249,104 @@ function Block({ placed, pxPerSec, selected }: { placed: PlacedSegment; pxPerSec
       {...attributes}
       {...listeners}
       onClick={onClick}
-      className={`pointer-events-auto relative h-full shrink-0 cursor-grab overflow-hidden rounded-md border-2 bg-zinc-800 active:cursor-grabbing ${
+      className={`group pointer-events-auto relative h-full shrink-0 cursor-grab rounded-md border-2 bg-zinc-800 active:cursor-grabbing ${
         selected ? 'border-white' : 'border-zinc-950'
-      } ${isDragging ? 'z-10 opacity-80 shadow-2xl' : ''}`}
+      } ${isDragging ? 'z-10 opacity-80 shadow-2xl' : 'hover:z-30'}`}
       style={{
         width,
         transform: CSS.Translate.toString(transform),
         transition
       }}
-      title={`${item.info.name}\n${formatTime(seg.start)} – ${formatTime(seg.end)} (${formatTime(duration)})`}
+      title={`${item.info.name}\n${formatTime(playStart)} – ${formatTime(playEnd)} of the recording\nPlays for ${formatTime(duration)} at ${formatSpeed(speed)}`}
     >
-      <div className="h-1.5 w-full" style={{ background: item.color }} />
-      {item.thumbnail && width > 60 && (
-        <img src={item.thumbnail} alt="" className="absolute inset-x-0 top-1.5 bottom-0 h-full w-full object-cover opacity-25" />
-      )}
-      {width > 48 && (
-        <div className="relative px-1.5 py-1 text-[10px] leading-tight">
-          <div className="truncate font-medium text-zinc-100">{item.info.name}</div>
-          <div className="truncate font-mono text-zinc-400">{formatTime(duration)}</div>
+      <div className="absolute inset-0 overflow-hidden rounded-[4px]">
+        <div className="h-1.5 w-full" style={{ background: item.color }} />
+        {item.thumbnail && width > 60 && (
+          <img src={item.thumbnail} alt="" className="absolute inset-x-0 top-1.5 bottom-0 h-full w-full object-cover opacity-25" />
+        )}
+        {speed !== 1 && (
+          <span className="absolute top-2 right-1 rounded bg-black/80 px-1 font-mono text-[10px] text-violet-200">
+            {formatSpeed(speed)}
+          </span>
+        )}
+        {width > 48 && (
+          <div className="relative px-1.5 py-1 text-[10px] leading-tight">
+            <div className="truncate pr-8 font-medium text-zinc-100">{item.info.name}</div>
+            <div className="truncate font-mono text-zinc-400">{formatTime(duration)}</div>
+          </div>
+        )}
+      </div>
+      {!isDragging && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+          <div className="pointer-events-auto" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <ClipTool title="Duplicate" onClick={() => duplicateBeside(seg.id)}>
+              <DuplicateIcon />
+            </ClipTool>
+          </div>
         </div>
       )}
+      {!isDragging && prevMergeId && <SeamButton side="left" onClick={() => mergeWithNext(prevMergeId)} />}
+      {!isDragging && canMergeNext && <SeamButton side="right" onClick={() => mergeWithNext(seg.id)} />}
     </div>
+  )
+}
+
+function SeamButton({ side, onClick }: { side: 'left' | 'right'; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title="Merge"
+      aria-label="Merge"
+      className={`group/tip pointer-events-none absolute top-1/2 z-40 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full border border-white/15 bg-zinc-950/92 text-zinc-100 opacity-0 shadow-lg shadow-black/50 backdrop-blur-md transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 hover:bg-zinc-800 ${
+        side === 'right' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2'
+      }`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+    >
+      <MergeIcon />
+      <span className="pointer-events-none absolute bottom-[calc(100%+7px)] left-1/2 z-10 -translate-x-1/2 rounded-md bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-white opacity-0 shadow-lg ring-1 ring-white/15 transition-opacity group-hover/tip:opacity-100">
+        Merge
+      </span>
+    </button>
+  )
+}
+
+function ClipTool({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      className="group/tip relative grid h-7 w-7 place-items-center rounded-full border border-white/15 bg-zinc-950/92 text-zinc-100 shadow-lg shadow-black/50 backdrop-blur-md hover:bg-zinc-800"
+      onClick={onClick}
+    >
+      {children}
+      <span className="pointer-events-none absolute bottom-[calc(100%+7px)] left-1/2 z-10 -translate-x-1/2 rounded-md bg-zinc-950 px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-white opacity-0 shadow-lg ring-1 ring-white/15 transition-opacity group-hover/tip:opacity-100">
+        {title}
+      </span>
+    </button>
+  )
+}
+
+function DuplicateIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="8.5" y="8.5" width="11" height="11" rx="2.25" />
+      <path d="M15.5 8.5V6.25A2.25 2.25 0 0 0 13.25 4h-7A2.25 2.25 0 0 0 4 6.25v7A2.25 2.25 0 0 0 6.25 15.5H8.5" />
+    </svg>
+  )
+}
+
+function MergeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12h14" />
+      <path d="M8.5 7.5 4 12l4.5 4.5" />
+      <path d="M15.5 7.5 20 12l-4.5 4.5" />
+    </svg>
   )
 }
 
@@ -252,6 +387,34 @@ function Ruler({ total, pxPerSec }: { total: number; pxPerSec: number }) {
         </div>
       ))}
     </div>
+  )
+}
+
+function ToolButton({
+  onClick,
+  disabled,
+  title,
+  danger,
+  children
+}: {
+  onClick: () => void
+  disabled?: boolean
+  title: string
+  danger?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      className={`shrink-0 rounded px-1.5 py-0.5 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 ${
+        danger ? 'hover:text-red-300' : ''
+      }`}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+    >
+      {children}
+    </button>
   )
 }
 

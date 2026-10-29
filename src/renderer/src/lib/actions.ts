@@ -1,6 +1,5 @@
 import { engine } from '../player'
 import { getMedia, useStore } from '../store'
-import { formatTime } from './format'
 import { nextKeyframe, previousKeyframe, snapToKeyframe } from './keyframes'
 
 function activeSource() {
@@ -49,14 +48,7 @@ export function addMarkedRange(): void {
     if (added) store.clearMarks(item.id)
     return added
   })
-  if (!segment) {
-    store.showToast('Range is too short to add', 'error')
-    return
-  }
-  const count = store.segments.length + 1
-  store.showToast(
-    `Added ${formatTime(segment.end - segment.start)} to timeline (${count} clip${count === 1 ? '' : 's'})`
-  )
+  if (!segment) store.showToast('Range is too short', 'error')
 }
 
 export function jumpKeyframe(direction: -1 | 1): void {

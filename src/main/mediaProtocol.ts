@@ -3,6 +3,7 @@ import { createReadStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { MEDIA_SCHEME } from '../shared/api'
+import type { DeleteImportedResult } from '../shared/types'
 
 const allowedPaths = new Set<string>()
 
@@ -11,6 +12,63 @@ const key = (p: string): string => path.resolve(p).toLowerCase()
 /** Only files the user explicitly imported can be streamed to the renderer. */
 export function allowMediaPath(p: string): void {
   allowedPaths.add(key(p))
+}
+
+const RETRYABLE = new Set(['EBUSY', 'EPERM', 'EACCES'])
+
+/**
+ * Deletes imported source files and forgets them. Anything never imported, or listed in
+ * `protect` (the export that was just written), is left alone.
+ */
+export async function deleteImportedFiles(paths: string[], protect: string[] = []): Promise<DeleteImportedResult> {
+  const protectedKeys = new Set(protect.map((p) => key(p)))
+  const deleted: string[] = []
+  const failed: DeleteImportedResult['failed'] = []
+  const seen = new Set<string>()
+
+  for (const filePath of paths) {
+    const id = key(filePath)
+    if (seen.has(id)) continue
+    seen.add(id)
+    if (!allowedPaths.has(id)) {
+      failed.push({ path: filePath, error: 'This file was not imported.' })
+      continue
+    }
+    if (protectedKeys.has(id)) {
+      failed.push({ path: filePath, error: 'This file is the export that was just saved.' })
+      continue
+    }
+    try {
+      await unlinkWhenFree(filePath)
+      allowedPaths.delete(id)
+      deleted.push(filePath)
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      failed.push({
+        path: filePath,
+        error: code === 'ENOENT' ? 'Already gone.' : 'The file is still in use.'
+      })
+    }
+  }
+
+  return { deleted, failed }
+}
+
+async function unlinkWhenFree(filePath: string): Promise<void> {
+  let last: unknown
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await fs.unlink(filePath)
+      return
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return
+      if (!code || !RETRYABLE.has(code)) throw e
+      last = e
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+  }
+  throw last
 }
 
 const MIME: Record<string, string> = {

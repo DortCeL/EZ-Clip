@@ -1,5 +1,7 @@
 import { create } from 'zustand'
-import type { MediaInfo } from '../../shared/types'
+import { segmentSpeed } from '../../shared/speed'
+import type { MediaInfo, SavedProject } from '../../shared/types'
+import { layoutSequence, mergeBlocker } from './lib/sequence'
 import { colorForIndex } from './lib/colors'
 import { snapToKeyframe } from './lib/keyframes'
 
@@ -22,6 +24,8 @@ export interface Segment {
   sourceId: string
   start: number
   end: number
+  /** 1 = recording speed. Pitch follows this rate. */
+  speed: number
 }
 
 export type Mode = 'source' | 'timeline'
@@ -69,6 +73,8 @@ interface State {
   addMedia(info: MediaInfo): MediaItem
   updateMedia(id: string, patch: Partial<MediaItem>): void
   removeMedia(id: string): void
+  /** Drops sources whose files were deleted. Clears undo so they cannot come back. */
+  forgetMedia(ids: string[]): void
   setActiveSource(id: string | null): void
   setMode(mode: Mode): void
   setImporting(delta: number): void
@@ -84,12 +90,44 @@ interface State {
   /** Moves a segment edge to a source time (starts snap to keyframes). */
   trimSegment(id: string, side: 'start' | 'end', sourceTime: number): boolean
   moveSegment(id: string, toIndex: number): void
+  setSegmentSpeed(id: string, speed: number): void
+  /** Inserts a duplicate after `afterId`, or at the end when that clip is gone. */
+  duplicateSegment(afterId: string | null, copy: Pick<Segment, 'sourceId' | 'start' | 'end' | 'speed'>): Segment | null
+  /** Joins a clip with the one after it. Returns false when they cannot become one clip. */
+  mergeSegments(leftId: string): boolean
 
   showToast(message: string, kind?: Toast['kind']): void
+
+  captureProject(): SavedProject
+  restoreProject(project: {
+    media: MediaItem[]
+    marks: Record<string, Marks>
+    segments: Segment[]
+    selectedSegmentId: string | null
+    activeSourceId: string | null
+    mode: Mode
+  }): void
 }
 
 const MIN_SEGMENT = 0.05
 const HISTORY_LIMIT = 200
+
+function dropSources(
+  s: State,
+  drop: Set<string>
+): Pick<State, 'media' | 'segments' | 'marks' | 'activeSourceId' | 'selectedSegmentId'> {
+  const media = s.media.filter((m) => !drop.has(m.id))
+  const segments = s.segments.filter((seg) => !drop.has(seg.sourceId))
+  const marks = { ...s.marks }
+  for (const id of drop) delete marks[id]
+  return {
+    media,
+    segments,
+    marks,
+    activeSourceId: drop.has(s.activeSourceId ?? '') ? (media[0]?.id ?? null) : s.activeSourceId,
+    selectedSegmentId: segments.some((seg) => seg.id === s.selectedSegmentId) ? s.selectedSegmentId : null
+  }
+}
 
 let nextId = 1
 const uid = (prefix: string): string => `${prefix}${nextId++}`
@@ -228,20 +266,17 @@ export const useStore = create<State>((set, get) => {
     removeMedia(id) {
       if (!get().media.some((m) => m.id === id)) return
       record('Remove media')
-      set((s) => {
-        const media = s.media.filter((m) => m.id !== id)
-        const segments = s.segments.filter((seg) => seg.sourceId !== id)
-        const { [id]: _removed, ...marks } = s.marks
-        return {
-          media,
-          segments,
-          marks,
-          activeSourceId: s.activeSourceId === id ? (media[0]?.id ?? null) : s.activeSourceId,
-          selectedSegmentId: segments.some((seg) => seg.id === s.selectedSegmentId)
-            ? s.selectedSegmentId
-            : null
-        }
-      })
+      set((s) => dropSources(s, new Set([id])))
+    },
+
+    forgetMedia(ids) {
+      const drop = new Set(ids)
+      if (drop.size === 0) return
+      for (const id of drop) {
+        mediaArchive.delete(id)
+        importOrder.delete(id)
+      }
+      set((s) => ({ ...dropSources(s, drop), past: [], future: [] }))
     },
 
     setActiveSource(id) {
@@ -277,7 +312,7 @@ export const useStore = create<State>((set, get) => {
       const snappedStart = snapToKeyframe(item.keyframes, Math.max(0, start))
       const clampedEnd = Math.min(end, item.info.duration)
       if (clampedEnd - snappedStart < MIN_SEGMENT) return null
-      const segment: Segment = { id: uid('s'), sourceId, start: snappedStart, end: clampedEnd }
+      const segment: Segment = { id: uid('s'), sourceId, start: snappedStart, end: clampedEnd, speed: 1 }
       record('Add clip')
       set((s) => ({ segments: [...s.segments, segment], selectedSegmentId: segment.id }))
       return segment
@@ -304,11 +339,19 @@ export const useStore = create<State>((set, get) => {
       const seg = s.segments[index]
       if (!seg) return null
       const item = s.media.find((m) => m.id === seg.sourceId)
-      const secondStart = snapToKeyframe(item?.keyframes ?? null, sourceTime)
+      // A speed change is re-encoded, so the cut can fall anywhere. Stream copy still starts on a keyframe.
+      const secondStart =
+        segmentSpeed(seg.speed) === 1 ? snapToKeyframe(item?.keyframes ?? null, sourceTime) : sourceTime
       if (sourceTime - seg.start < MIN_SEGMENT || seg.end - sourceTime < MIN_SEGMENT) return null
       if (secondStart - seg.start < MIN_SEGMENT) return null
-      const first: Segment = { ...seg, end: sourceTime }
-      const second: Segment = { id: uid('s'), sourceId: seg.sourceId, start: secondStart, end: seg.end }
+      const first: Segment = { ...seg, end: sourceTime, speed: segmentSpeed(seg.speed) }
+      const second: Segment = {
+        id: uid('s'),
+        sourceId: seg.sourceId,
+        start: secondStart,
+        end: seg.end,
+        speed: segmentSpeed(seg.speed)
+      }
       const segments = [...s.segments]
       segments.splice(index, 1, first, second)
       record('Split')
@@ -332,6 +375,60 @@ export const useStore = create<State>((set, get) => {
       return true
     },
 
+    setSegmentSpeed(id, speed) {
+      const s = get()
+      const seg = s.segments.find((x) => x.id === id)
+      const next = segmentSpeed(speed)
+      if (!seg || segmentSpeed(seg.speed) === next) return
+      // Drop the keyframe overlap once the clip will be re-encoded, so a later duplicate
+      // does not replay the neighboring clip.
+      const preview = s.segments.map((x) => (x.id === id ? { ...x, speed: next } : x))
+      const placed = layoutSequence(preview, s.media).placed.find((p) => p.seg.id === id)
+      const start = placed?.playStart ?? seg.start
+      const end = placed?.playEnd ?? seg.end
+      record('Change speed')
+      set({
+        segments: s.segments.map((x) => (x.id === id ? { ...x, speed: next, start, end } : x))
+      })
+    },
+
+    duplicateSegment(afterId, copy) {
+      const item = get().media.find((m) => m.id === copy.sourceId)
+      if (!item) return null
+      const start = Math.max(0, copy.start)
+      const end = Math.min(copy.end, item.info.duration)
+      if (end - start < MIN_SEGMENT) return null
+      const segment: Segment = {
+        id: uid('s'),
+        sourceId: copy.sourceId,
+        start,
+        end,
+        speed: segmentSpeed(copy.speed)
+      }
+      record('Paste')
+      set((s) => {
+        const index = afterId ? s.segments.findIndex((seg) => seg.id === afterId) : -1
+        const segments = [...s.segments]
+        segments.splice(index < 0 ? segments.length : index + 1, 0, segment)
+        return { segments, selectedSegmentId: segment.id }
+      })
+      return segment
+    },
+
+    mergeSegments(leftId) {
+      const s = get()
+      const index = s.segments.findIndex((seg) => seg.id === leftId)
+      const left = s.segments[index]
+      const right = s.segments[index + 1]
+      if (!left || !right || mergeBlocker(left, right)) return false
+      const merged: Segment = { ...left, end: Math.max(left.end, right.end), speed: segmentSpeed(left.speed) }
+      const segments = [...s.segments]
+      segments.splice(index, 2, merged)
+      record('Merge')
+      set({ segments, selectedSegmentId: merged.id })
+      return true
+    },
+
     moveSegment(id, toIndex) {
       const from = get().segments.findIndex((seg) => seg.id === id)
       if (from < 0 || from === toIndex) return
@@ -350,6 +447,59 @@ export const useStore = create<State>((set, get) => {
       setTimeout(() => {
         if (get().toast?.id === toast.id) set({ toast: null })
       }, 3200)
+    },
+
+    captureProject() {
+      const s = get()
+      return {
+        version: 1,
+        media: s.media.map((m) => ({ id: m.id, path: m.info.path, color: m.color })),
+        marks: s.marks,
+        segments: s.segments.map((seg) => ({
+          id: seg.id,
+          sourceId: seg.sourceId,
+          start: seg.start,
+          end: seg.end,
+          speed: segmentSpeed(seg.speed)
+        })),
+        selectedSegmentId: s.selectedSegmentId,
+        activeSourceId: s.activeSourceId,
+        mode: s.mode
+      }
+    },
+
+    restoreProject(project) {
+      mediaArchive.clear()
+      importOrder.clear()
+      project.media.forEach((m, i) => {
+        mediaArchive.set(m.id, m)
+        importOrder.set(m.id, i + 1)
+      })
+      importSeq = project.media.length
+      let maxId = 0
+      const bump = (id: string): void => {
+        const n = Number(id.replace(/^\D+/, ''))
+        if (n > maxId) maxId = n
+      }
+      for (const m of project.media) bump(m.id)
+      for (const seg of project.segments) bump(seg.id)
+      nextId = maxId + 1
+      colorIndex = project.media.length
+      const known = new Set(project.media.map((m) => m.id))
+      set({
+        media: project.media,
+        marks: project.marks,
+        segments: project.segments
+          .filter((seg) => known.has(seg.sourceId))
+          .map((seg) => ({ ...seg, speed: segmentSpeed(seg.speed) })),
+        selectedSegmentId: project.selectedSegmentId,
+        activeSourceId: known.has(project.activeSourceId ?? '')
+          ? project.activeSourceId
+          : (project.media[0]?.id ?? null),
+        mode: project.mode,
+        past: [],
+        future: []
+      })
     }
   }
 })

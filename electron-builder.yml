@@ -1,5 +1,6 @@
 appId: com.ezclip.app
 productName: Ez-clip
+artifactName: setup.${ext}
 directories:
   buildResources: build
   output: release
@@ -9,9 +10,14 @@ files:
 asarUnpack:
   - node_modules/ffmpeg-static/**
   - node_modules/@derhuerst/ffprobe-static/**
+extraResources:
+  - from: resources/fast-forward.png
+    to: fast-forward.png
 win:
+  icon: build/icon.ico
   target:
     - nsis
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  warningsAsErrors: false

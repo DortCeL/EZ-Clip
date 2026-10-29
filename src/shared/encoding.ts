@@ -11,7 +11,7 @@ export interface EncoderOption {
 
 export const CODEC_LABEL: Record<VideoCodec, { name: string; hint: string }> = {
   h264: { name: 'H.264', hint: 'Plays everywhere' },
-  hevc: { name: 'HEVC', hint: 'Same look, smaller file' },
+  hevc: { name: 'HEVC', hint: 'Smaller file' },
   av1: { name: 'AV1', hint: 'Smallest, newer players only' }
 }
 
@@ -32,8 +32,13 @@ function totalBitrate(info: MediaInfo): number {
 }
 
 export function sourceVideoBitrate(info: MediaInfo): number {
-  if (info.video?.bitRate) return info.video.bitRate
-  return Math.max(0, totalBitrate(info) - FALLBACK_AUDIO_BITRATE * info.audio.length)
+  const fileVideo = Math.max(0, totalBitrate(info) - FALLBACK_AUDIO_BITRATE * info.audio.length)
+  const tagged = info.video?.bitRate ?? 0
+  // A stream tag can be a peak or a placeholder far above the real file. Optimal
+  // sizes itself from this number, so the file on disk wins when the tag is higher.
+  if (tagged > 0 && fileVideo > 0) return Math.min(tagged, fileVideo)
+  if (tagged > 0) return tagged
+  return fileVideo
 }
 
 /** Target video bitrate for a quality percentage of the source's own bitrate. */
@@ -44,6 +49,54 @@ export function targetVideoBitrate(info: MediaInfo, quality: number): number {
 export interface SizeEstimateInput {
   info: MediaInfo
   duration: number
+}
+
+/**
+ * Average video bitrate as a percent of the recording.
+ * High enough that the picture stays put, low enough that the file is smaller than a copy.
+ */
+const SAME_LOOK_PERCENT: Record<VideoCodec, number> = {
+  h264: 55,
+  hevc: 40,
+  av1: 32
+}
+
+/** Short spikes may go higher, but still stay under the recording. */
+const SAME_LOOK_MAX_PERCENT: Record<VideoCodec, number> = {
+  h264: 75,
+  hevc: 55,
+  av1: 45
+}
+
+function shareOfSource(info: MediaInfo, percent: number): number {
+  const source = sourceVideoBitrate(info)
+  if (source <= 0) return MIN_VIDEO_BITRATE
+  const share = Math.round((source * percent) / 100)
+  const ceiling = Math.max(1, Math.round(source * 0.9))
+  return Math.min(Math.max(share, Math.min(MIN_VIDEO_BITRATE, ceiling)), ceiling)
+}
+
+export function codecForEncoder(encoder: string): VideoCodec {
+  if (encoder.includes('av1')) return 'av1'
+  if (encoder.includes('265') || encoder.includes('hevc')) return 'hevc'
+  return 'h264'
+}
+
+export function sameLookVideoBitrate(info: MediaInfo, codec: VideoCodec): number {
+  return shareOfSource(info, SAME_LOOK_PERCENT[codec])
+}
+
+export function sameLookMaxBitrate(info: MediaInfo, codec: VideoCodec): number {
+  return Math.max(sameLookVideoBitrate(info, codec), shareOfSource(info, SAME_LOOK_MAX_PERCENT[codec]))
+}
+
+export function estimateSameLookSize(parts: SizeEstimateInput[], codec: VideoCodec, audioTracks = 0): number {
+  return Math.round(
+    parts.reduce((sum, { info, duration }) => {
+      const bitrate = sameLookVideoBitrate(info, codec) + audioTracks * ENCODED_AUDIO_BITRATE
+      return sum + (duration * bitrate) / 8
+    }, 0)
+  )
 }
 
 /** Expected output size in bytes. Compressed exports target a bitrate, so the estimate is close. */

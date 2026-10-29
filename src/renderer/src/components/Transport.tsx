@@ -37,22 +37,7 @@ export function Transport() {
         </span>
       )}
 
-      {mode === 'timeline' ? (
-        <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">
-          <span>
-            <kbd>S</kbd> split
-          </span>
-          <span>
-            <kbd>Q</kbd> / <kbd>W</kbd> trim before / after playhead
-          </span>
-          <span>
-            <kbd>Del</kbd> remove clip
-          </span>
-          <span>
-            <kbd>↑</kbd> <kbd>↓</kbd> prev / next clip
-          </span>
-        </div>
-      ) : (
+      {mode === 'source' && (
       <div className="ml-auto flex items-center gap-2">
         <MarkButton label="In" shortcut="I" value={inSnapped} onClick={markIn} disabled={disabled} />
         <MarkButton label="Out" shortcut="O" value={marks?.out ?? null} onClick={markOut} disabled={disabled} />

@@ -1,6 +1,18 @@
+import { create } from 'zustand'
+import { segmentSpeed } from '../../../shared/speed'
 import { engine } from '../player'
+import { mergeBlocker } from './sequence'
 import { useStore } from '../store'
-import { formatTime } from './format'
+
+/** A timeline clip kept for Ctrl+V. It is not part of the saved project. */
+export interface CopiedClip {
+  sourceId: string
+  start: number
+  end: number
+  speed: number
+}
+
+export const useClipClipboard = create<{ clip: CopiedClip | null }>(() => ({ clip: null }))
 
 function current() {
   const id = engine.currentSegmentId
@@ -13,9 +25,7 @@ export function addWholeClip(sourceId: string): void {
   const store = useStore.getState()
   const item = store.media.find((m) => m.id === sourceId)
   if (!item) return
-  if (store.addSegment(sourceId, 0, item.info.duration)) {
-    store.showToast(`Added ${item.info.name} to timeline`)
-  }
+  store.addSegment(sourceId, 0, item.info.duration)
 }
 
 export function toggleMode(): void {
@@ -34,22 +44,15 @@ export function toggleMode(): void {
 
 export function splitAtPlayhead(): void {
   const store = useStore.getState()
-  if (store.mode !== 'timeline') {
-    store.showToast('Splitting works on the timeline — press Tab to switch')
-    return
-  }
+  if (store.mode !== 'timeline') return
   const cur = current()
   if (!cur) return
-  const t = engine.sourceTime
+  const { placed } = cur
+  const into = Math.min(Math.max(0, engine.time - placed.offset), placed.duration)
+  const t = placed.playStart + into * segmentSpeed(placed.seg.speed)
   engine.pause()
-  const result = store.splitSegment(cur.placed.seg.id, t)
-  if (!result) {
-    store.showToast('Can’t split here — too close to an edge or no keyframe before the playhead', 'error')
-    return
-  }
-  const overlap = t - result[1].start
-  if (overlap > 0.01) {
-    store.showToast(`Split · right part starts at keyframe ${formatTime(result[1].start)} (−${overlap.toFixed(2)}s)`)
+  if (!store.splitSegment(placed.seg.id, t)) {
+    store.showToast('Can’t split here', 'error')
   }
 }
 
@@ -61,7 +64,7 @@ export function trimStartToPlayhead(): void {
   engine.pause()
   engine.setTimelineTimeHint(cur.placed.offset)
   if (!store.trimSegment(cur.placed.seg.id, 'start', engine.sourceTime)) {
-    store.showToast('No keyframe between the clip start and the playhead', 'error')
+    store.showToast('Can’t trim here', 'error')
   }
 }
 
@@ -75,6 +78,113 @@ export function trimEndToPlayhead(): void {
   if (!store.trimSegment(cur.placed.seg.id, 'end', engine.sourceTime)) {
     store.showToast('Clip would be too short', 'error')
   }
+}
+
+function targetSegmentId(): string | null {
+  const store = useStore.getState()
+  return store.selectedSegmentId ?? engine.currentSegmentId
+}
+
+export function copySelected(): void {
+  const store = useStore.getState()
+  const id = targetSegmentId()
+  const seg = store.segments.find((item) => item.id === id)
+  if (!seg) {
+    store.showToast('Select a clip to copy', 'error')
+    return
+  }
+  const placed = engine.sequence.placed.find((p) => p.seg.id === id)
+  useClipClipboard.setState({
+    clip: {
+      sourceId: seg.sourceId,
+      start: placed?.playStart ?? seg.start,
+      end: placed?.playEnd ?? seg.end,
+      speed: segmentSpeed(seg.speed)
+    }
+  })
+}
+
+export function pasteClipboard(): void {
+  const store = useStore.getState()
+  const clip = useClipClipboard.getState().clip
+  if (!clip) {
+    store.showToast('Copy a clip first', 'error')
+    return
+  }
+  engine.pause()
+  const segment = store.duplicateSegment(targetSegmentId(), clip)
+  if (!segment) {
+    store.showToast('That recording is no longer in the project', 'error')
+    return
+  }
+  selectAndSeek(segment.id, 0)
+}
+
+/** Puts a copy of this clip directly after it. */
+export function duplicateBeside(id: string): void {
+  const store = useStore.getState()
+  const placed = engine.sequence.placed.find((p) => p.seg.id === id)
+  const seg = placed?.seg ?? store.segments.find((item) => item.id === id)
+  if (!seg) return
+  engine.pause()
+  const segment = store.duplicateSegment(id, {
+    sourceId: seg.sourceId,
+    start: placed?.playStart ?? seg.start,
+    end: placed?.playEnd ?? seg.end,
+    speed: segmentSpeed(seg.speed)
+  })
+  if (!segment) {
+    store.showToast('Can’t duplicate that clip', 'error')
+    return
+  }
+  selectAndSeek(segment.id, 0)
+}
+
+/**
+ * Joins the selected clip with the piece beside it. The next clip wins when both sides
+ * can merge; otherwise the previous clip is used. A split can be merged back. A gap,
+ * a speed change, or a different recording cannot.
+ */
+/** Merges one specific join, the cut after `leftId`. */
+export function mergeWithNext(leftId: string): void {
+  const store = useStore.getState()
+  const index = store.segments.findIndex((seg) => seg.id === leftId)
+  const left = store.segments[index]
+  const right = store.segments[index + 1]
+  if (!left || !right) return
+  const blocker = mergeBlocker(left, right)
+  if (blocker) {
+    store.showToast(blocker, 'error')
+    return
+  }
+  engine.pause()
+  store.mergeSegments(leftId)
+}
+
+export function mergeCut(id?: string): void {
+  const store = useStore.getState()
+  const target = id ?? targetSegmentId()
+  const index = store.segments.findIndex((seg) => seg.id === target)
+  const seg = store.segments[index]
+  if (!seg) {
+    store.showToast('Select a clip to merge', 'error')
+    return
+  }
+  const next = store.segments[index + 1]
+  const prev = store.segments[index - 1]
+  const withNext = next ? mergeBlocker(seg, next) : 'Nothing to merge'
+  if (next && !withNext) {
+    engine.pause()
+    store.mergeSegments(seg.id)
+    return
+  }
+  const withPrev = prev ? mergeBlocker(prev, seg) : null
+  if (prev && !withPrev) {
+    engine.pause()
+    store.mergeSegments(prev.id)
+    return
+  }
+  store.showToast((next ? withNext : withPrev) ?? 'Nothing to merge', 'error')
 }
 
 export function deleteSelected(): void {
@@ -91,17 +201,13 @@ export function deleteSelected(): void {
 }
 
 export function undo(): void {
-  const store = useStore.getState()
   engine.pause()
-  const label = store.undo()
-  store.showToast(label ? `Undo: ${label}` : 'Nothing to undo')
+  useStore.getState().undo()
 }
 
 export function redo(): void {
-  const store = useStore.getState()
   engine.pause()
-  const label = store.redo()
-  store.showToast(label ? `Redo: ${label}` : 'Nothing to redo')
+  useStore.getState().redo()
 }
 
 export function jumpSegmentBoundary(direction: -1 | 1): void {

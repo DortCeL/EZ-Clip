@@ -1,19 +1,43 @@
 import { useEffect, useState } from 'react'
 import { timestampedName } from '../../../shared/naming'
-import type { FfmpegInfo, Settings } from '../../../shared/types'
+import type { Settings } from '../../../shared/types'
 import { Modal } from './Modal'
+
+/** Short names people actually put on clip files. EzClip stays so the default is one click away. */
+const PREFIX_PRESETS = [
+  'EzClip',
+  'Siege',
+  'CS2',
+  'Valorant',
+  'Dota',
+  'League',
+  'Apex',
+  'Fortnite',
+  'Overwatch',
+  'Warzone',
+  'Rust',
+  'Tarkov',
+  'PUBG',
+  'Rivals',
+  'RocketLeague',
+  'Minecraft',
+  'GTA',
+  'Deadlock',
+  'Helldivers',
+  'WoW',
+  'Destiny',
+  'Halo'
+]
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [prefix, setPrefix] = useState('')
-  const [ffmpeg, setFfmpeg] = useState<FfmpegInfo | null>(null)
 
   useEffect(() => {
     void window.ezclip.getSettings().then((s) => {
       setSettings(s)
       setPrefix(s.filePrefix)
     })
-    void window.ezclip.ffmpegInfo().then(setFfmpeg)
   }, [])
 
   const save = async (patch: Partial<Settings>): Promise<void> => {
@@ -27,7 +51,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     if (dir) await save({ outputDir: dir })
   }
 
-  const nvenc = ffmpeg?.hwEncoders.filter((e) => e.endsWith('_nvenc')) ?? []
+  const pickPrefix = (name: string): void => {
+    setPrefix(name)
+    if (settings && name !== settings.filePrefix) void save({ filePrefix: name })
+  }
 
   return (
     <Modal title="Settings" onClose={onClose} footer={<button className="btn-primary" onClick={onClose}>Done</button>}>
@@ -58,33 +85,45 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               onBlur={() => prefix !== settings.filePrefix && void save({ filePrefix: prefix })}
               onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
             />
-            <div className="mt-1.5 text-xs text-zinc-500">
-              Example: <span className="font-mono text-zinc-300">{timestampedName(prefix || 'EzClip', new Date())}.mp4</span>
-              <br />
-              Date and time in the name keep exports sorted chronologically.
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {PREFIX_PRESETS.map((name) => {
+                const selected = prefix.trim().toLowerCase() === name.toLowerCase()
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`rounded-md border px-2 py-0.5 text-xs ${
+                      selected
+                        ? 'border-accent text-zinc-100'
+                        : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                    }`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => pickPrefix(name)}
+                  >
+                    {name}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="mt-1.5 font-mono text-xs text-zinc-500">
+              {timestampedName(prefix || 'EzClip', new Date())}.mp4
             </div>
           </Field>
 
-          <label className="flex cursor-pointer items-center gap-2">
+          <label className="flex cursor-pointer items-start gap-2">
             <input
               type="checkbox"
-              className="accent-accent h-4 w-4"
-              checked={settings.revealAfterExport}
-              onChange={(e) => void save({ revealAfterExport: e.target.checked })}
+              className="accent-accent mt-0.5 h-4 w-4"
+              checked={settings.deleteOriginalsAfterExport}
+              onChange={(e) => void save({ deleteOriginalsAfterExport: e.target.checked })}
             />
-            Show the file in Explorer after exporting
+            <span>
+              Delete original clips after export
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                After a successful export, the source files used in it are deleted from disk. This can’t be undone.
+              </span>
+            </span>
           </label>
-
-          <Field label="FFmpeg">
-            <div className="space-y-1 text-xs text-zinc-400">
-              <div className="font-mono">{ffmpeg?.version.replace(/ Copyright.*/, '') ?? 'loading…'}</div>
-              <div>
-                NVIDIA encoders available:{' '}
-                {nvenc.length ? <span className="text-emerald-400">{nvenc.join(', ')}</span> : <span>none</span>}
-                <span className="text-zinc-600"> (used by compressed export, coming next)</span>
-              </div>
-            </div>
-          </Field>
         </div>
       )}
     </Modal>

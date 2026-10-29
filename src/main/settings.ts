@@ -10,7 +10,8 @@ function defaults(): Settings {
   return {
     outputDir: path.join(app.getPath('videos'), 'Ez-clip'),
     filePrefix: 'EzClip',
-    revealAfterExport: true,
+    deleteOriginalsAfterExport: false,
+    exportSameLook: true,
     exportQuality: LOSSLESS_QUALITY,
     exportCodec: 'h264'
   }
@@ -22,7 +23,7 @@ export async function loadSettings(): Promise<Settings> {
   if (current) return current
   try {
     const raw = JSON.parse(await fs.readFile(settingsFile(), 'utf8')) as Partial<Settings>
-    current = { ...defaults(), ...raw }
+    current = normalize({ ...defaults(), ...raw })
   } catch {
     current = defaults()
   }
@@ -30,7 +31,7 @@ export async function loadSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
-  const next = { ...(await loadSettings()), ...patch }
+  const next = normalize({ ...(await loadSettings()), ...patch })
   next.filePrefix = sanitizePrefix(next.filePrefix)
   next.exportQuality = Math.round(Math.min(LOSSLESS_QUALITY, Math.max(MIN_QUALITY, next.exportQuality)))
   const file = settingsFile()
@@ -39,6 +40,18 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf8')
   await fs.rename(tmp, file)
   current = next
+  return next
+}
+
+function normalize(settings: Settings): Settings {
+  const next: Settings = {
+    outputDir: settings.outputDir,
+    filePrefix: settings.filePrefix,
+    deleteOriginalsAfterExport: settings.deleteOriginalsAfterExport === true,
+    exportSameLook: settings.exportSameLook === true,
+    exportQuality: settings.exportQuality,
+    exportCodec: settings.exportCodec
+  }
   return next
 }
 

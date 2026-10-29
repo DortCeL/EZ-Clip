@@ -1,10 +1,11 @@
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { IPC, VIDEO_EXTENSIONS } from '../shared/api'
-import type { ExportRequest, Settings } from '../shared/types'
+import type { ExportRequest, SavedProject, Settings } from '../shared/types'
 import { getFfmpegInfo } from './binaries'
 import { cancelExport, exportVideo } from './export'
 import { keyframes, probe, thumbnail } from './media'
-import { allowMediaPath } from './mediaProtocol'
+import { allowMediaPath, deleteImportedFiles } from './mediaProtocol'
+import { ackProjectFlush, loadProject, saveProject } from './project'
 import { loadSettings, saveSettings } from './settings'
 
 function showOpenDialog(e: IpcMainInvokeEvent, options: Electron.OpenDialogOptions) {
@@ -30,6 +31,10 @@ export function registerIpc(): void {
     allowMediaPath(filePath)
     return info
   })
+
+  ipcMain.handle(IPC.deleteImported, (_e, paths: string[], protect?: string[]) =>
+    deleteImportedFiles(Array.isArray(paths) ? paths : [], Array.isArray(protect) ? protect : [])
+  )
 
   ipcMain.handle(IPC.keyframes, (_e, filePath: string) => keyframes(filePath))
 
@@ -57,11 +62,16 @@ export function registerIpc(): void {
     const result = await exportVideo(request, (progress) => {
       if (!e.sender.isDestroyed()) e.sender.send(IPC.exportProgress, progress)
     })
-    if (result.ok && (await loadSettings()).revealAfterExport) shell.showItemInFolder(result.outputPath)
     return result
   })
 
   ipcMain.handle(IPC.cancelExport, () => cancelExport())
+
+  ipcMain.handle(IPC.loadProject, () => loadProject())
+
+  ipcMain.handle(IPC.saveProject, (_e, project: SavedProject | null) => saveProject(project))
+
+  ipcMain.on(IPC.projectFlushed, () => ackProjectFlush())
 
   ipcMain.handle(IPC.revealInFolder, (_e, filePath: string) => {
     shell.showItemInFolder(filePath)
