@@ -1,6 +1,6 @@
 # EZ Clip
 
-EZ Clip is a Windows desktop app for making short gaming clips easier. Import a recording, trim it on a timeline, join the parts you want, and export one file.
+EZ Clip is a Windows desktop app for making short gaming clips easier. Import a recording, trim it on a timeline, join the parts you want, and export one file. File can be compressed to have a desired file size without compromising quality much.
 
 ![Screenshot](resources/screenshot.png)
 
